@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# OpenPVScope runtime
+.opsx_cache/
+*.opsx
+!samples/**/*.opsx
+data/
+work/
+engines/*
+!engines/.gitkeep
+!engines/README.md
+
+# Secrets / local
+.env
+.env.local
+
+# Packaging artifacts
+packaging/windows/Output/
+*.exe
+*.msi

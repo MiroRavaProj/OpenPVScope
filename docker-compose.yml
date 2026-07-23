@@ -1,0 +1,16 @@
+# Optional — developers only. End users use the Windows installer.
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./backend:/app
+      - opsx_cache:/root/.openpvscope
+    command: uvicorn openpvscope.api.app:app --host 0.0.0.0 --port 8787 --reload
+
+volumes:
+  opsx_cache:
