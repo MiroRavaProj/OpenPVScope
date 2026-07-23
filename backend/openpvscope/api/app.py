@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,8 @@ from openpvscope import __version__
 from openpvscope.alignment import apply_georef_rewrite, save_alignment_artifacts
 from openpvscope.console import get_console
 from openpvscope.detection import (
+    clear_detection,
+    copy_rgb_grid_to_thermal,
     detection_job_status,
     detection_status,
     generate_grid,
@@ -112,16 +114,21 @@ class SettingsPatch(BaseModel):
 
 class AoiBody(BaseModel):
     ring: list[list[float]] = Field(description="4 corners [[lon,lat], ...]")
+    modality: Literal["rgb", "thermal"] = "rgb"
+    regenerate_grid: bool = False
 
 
 class GridBody(BaseModel):
     rows: int = Field(ge=1, le=200)
     cols: int = Field(ge=1, le=200)
+    modality: Literal["rgb", "thermal"] = "rgb"
 
 
 class DetectRunBody(BaseModel):
-    confidence: float = Field(default=0.55, ge=0.1, le=0.99)
-    nms_iou: float = Field(default=0.15, ge=0.01, le=0.9)
+    confidence: float = Field(default=0.5, ge=0.1, le=0.99)
+    nms_iou: float = Field(default=0.05, ge=0.01, le=0.9)
+    num_templates: int = Field(default=1, ge=1, le=50)
+    modality: Literal["rgb", "thermal", "both"] = "both"
 
 
 class SegmentRunBody(BaseModel):
@@ -598,9 +605,12 @@ def map_layers() -> dict[str, Any]:
             }
         )
     vectors = {
-        "aoi": "/api/detection/geojson/aoi",
-        "grid": "/api/detection/geojson/grid",
-        "panels": "/api/detection/geojson/panels",
+        "aoi": "/api/detection/geojson/aoi?modality=rgb",
+        "grid": "/api/detection/geojson/grid?modality=rgb",
+        "panels": "/api/detection/geojson/panels?modality=rgb",
+        "aoi_thermal": "/api/detection/geojson/aoi?modality=thermal",
+        "grid_thermal": "/api/detection/geojson/grid?modality=thermal",
+        "panels_thermal": "/api/detection/geojson/panels?modality=thermal",
         "pairs": "/api/segmentation/pairs.geojson",
     }
     return {"layers": layers, "vectors": vectors}
@@ -894,11 +904,11 @@ def api_detection_status() -> dict[str, Any]:
 
 
 @app.get("/api/detection/aoi")
-def api_detection_get_aoi() -> dict[str, Any]:
+def api_detection_get_aoi(modality: Literal["rgb", "thermal"] = "rgb") -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
-    fc = load_geojson(store.root, "aoi")
+    fc = load_geojson(store.root, "aoi", modality=modality)
     if not fc:
         raise HTTPException(404, "No AOI saved")
     return fc
@@ -911,11 +921,24 @@ def api_detection_put_aoi(body: AoiBody) -> dict[str, Any]:
         raise HTTPException(404, "No project open")
     store.checkpoint("Before AOI update")
     try:
-        path = save_aoi_geojson(store.root, body.ring)
+        path = save_aoi_geojson(
+            store.root,
+            body.ring,
+            modality=body.modality,
+            regenerate_grid=body.regenerate_grid,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     store.autosave()
-    return {"ok": True, "path": str(path), "geojson": load_geojson(store.root, "aoi")}
+    return {
+        "ok": True,
+        "path": str(path),
+        "modality": body.modality,
+        "geojson": load_geojson(store.root, "aoi", modality=body.modality),
+        "grid": load_geojson(store.root, "grid", modality=body.modality)
+        if body.regenerate_grid
+        else None,
+    }
 
 
 @app.post("/api/detection/grid")
@@ -925,13 +948,31 @@ def api_detection_grid(body: GridBody) -> dict[str, Any]:
         raise HTTPException(404, "No project open")
     store.checkpoint("Before grid generate")
     try:
-        result = generate_grid(store.root, rows=body.rows, cols=body.cols)
+        result = generate_grid(
+            store.root, rows=body.rows, cols=body.cols, modality=body.modality
+        )
     except FileNotFoundError as e:
         raise HTTPException(400, str(e)) from e
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     store.autosave()
-    result["geojson"] = load_geojson(store.root, "grid")
+    result["geojson"] = load_geojson(store.root, "grid", modality=body.modality)
+    return result
+
+
+@app.post("/api/detection/grid/copy-to-thermal")
+def api_detection_copy_to_thermal() -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    store.checkpoint("Before copy RGB grid to thermal")
+    try:
+        result = copy_rgb_grid_to_thermal(store.root)
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e)) from e
+    store.autosave()
+    result["thermal_aoi"] = load_geojson(store.root, "aoi", modality="thermal")
+    result["thermal_grid"] = load_geojson(store.root, "grid", modality="thermal")
     return result
 
 
@@ -941,7 +982,13 @@ def api_detection_run(body: DetectRunBody) -> dict[str, Any]:
     if not store.is_open:
         raise HTTPException(404, "No project open")
     try:
-        start_detection_job(store, confidence=body.confidence, nms_iou=body.nms_iou)
+        start_detection_job(
+            store,
+            modality="both",
+            confidence=body.confidence,
+            nms_iou=body.nms_iou,
+            num_templates=body.num_templates,
+        )
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
     return {"started": True, "job": detection_job_status()}
@@ -953,27 +1000,33 @@ def api_detection_job() -> dict[str, Any]:
 
 
 @app.get("/api/detection/geojson/{name}")
-def api_detection_geojson(name: str) -> dict[str, Any]:
+def api_detection_geojson(
+    name: str,
+    modality: Literal["rgb", "thermal"] = "rgb",
+) -> dict[str, Any]:
     if name not in ("aoi", "grid", "panels"):
         raise HTTPException(404, "Unknown layer")
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
-    fc = load_geojson(store.root, name)
+    fc = load_geojson(store.root, name, modality=modality)
     if not fc:
         return {"type": "FeatureCollection", "features": []}
     return fc
 
 
 @app.delete("/api/detection/panel/{panel_id}")
-def api_detection_delete_panel(panel_id: str) -> dict[str, Any]:
+def api_detection_delete_panel(
+    panel_id: str,
+    modality: Literal["rgb", "thermal"] = "rgb",
+) -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
     import json
 
-    path = detection_dir(store.root) / "panels.geojson"
-    fc = load_geojson(store.root, "panels")
+    path = detection_dir(store.root, modality) / "panels.geojson"
+    fc = load_geojson(store.root, "panels", modality=modality)
     if not fc:
         raise HTTPException(404, "No panels")
     store.checkpoint("Before panel delete")
@@ -985,27 +1038,18 @@ def api_detection_delete_panel(panel_id: str) -> dict[str, Any]:
     fc["features"] = feats
     path.write_text(json.dumps(fc), encoding="utf-8")
     store.autosave()
-    return {"ok": True, "panel_count": len(feats)}
+    return {"ok": True, "panel_count": len(feats), "modality": modality}
 
 
 @app.post("/api/detection/clear")
-def api_detection_clear() -> dict[str, Any]:
+def api_detection_clear(
+    modality: Literal["rgb", "thermal"] | None = None,
+) -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
     store.checkpoint("Before clear detection")
-    d = detection_dir(store.root)
-    for name in (
-        "aoi.geojson",
-        "aoi_ring.json",
-        "grid.geojson",
-        "grid_meta.json",
-        "panels.geojson",
-        "detection_meta.json",
-    ):
-        p = d / name
-        if p.is_file():
-            p.unlink()
+    clear_detection(store.root, modality=modality)
     store.autosave()
     return detection_status(store.root)
 

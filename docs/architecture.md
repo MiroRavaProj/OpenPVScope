@@ -38,7 +38,7 @@
 |------|--------|----------------------------|
 | Photogrammetry | `openpvscope.opensfm` | `inputs/ortho/`, `photogrammetry/` |
 | Alignment | `openpvscope.alignment` | `alignment/`, `thermal_aligned.tif` |
-| Detection | `openpvscope.detection` | `detection/rgb/{aoi,grid,panels}.geojson` |
+| Detection | `openpvscope.detection` | `detection/rgb|thermal/{aoi,grid,panels}.geojson` |
 | Segmentation | `openpvscope.segmentation` | `segmentation/pairs.json`, `panels/<id>/` |
 | Models / Classification | `openpvscope.ml` | `models/`, `classification/` |
 | Outputs | `openpvscope.exports` | `exports/` |
@@ -58,10 +58,10 @@ Pure Python  detection.grid → template_match → pipeline
              segmentation.pairing → extract (windowed GeoTIFF crops)
 ```
 
-- Detection: draw 4-corner AOI → rows×cols grid → OpenCV template match + NMS → `panels.geojson` (async job + Activity console).
-- Segmentation: pair RGB panels to the same geo rings on `thermal_aligned.tif`, windowed RGB/thermal crops + stats, `pairs.json` / `pairs.geojson`, on-demand PanelInspector.
+- Detection: draw 4-corner AOI per modality (RGB / thermal) → rows×cols grid → **Copy RGB→Thermal** optional → deskew AOI window → OpenCV template match + NMS → **oriented** `panels.geojson` from seed cell shape (async job; run RGB | Thermal | Both). Edit outer 4 corners after generate regenerates the grid.
+- Segmentation: pair **RGB** panels to the same geo rings on `thermal_aligned.tif`, windowed RGB/thermal crops + stats, `pairs.json` / `pairs.geojson`, on-demand PanelInspector. Thermal panels are for map QA (not required for pairing).
 - Workflow: `mark_step(..., DONE)` only on first completion of each step (re-runs overwrite artifacts without cascading unlocks).
-- History: checkpoints before AOI replace, grid, detect, and segment.
+- History: checkpoints before AOI replace, grid, copy-to-thermal, detect, and segment.
 
 ## Project storage
 

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import maplibregl, { Map, GeoJSONSource } from "maplibre-gl";
-import MapboxDraw from "@mapbox/mapbox-gl-draw";
+import maplibregl, { Map, GeoJSONSource, LngLatLike, Marker } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
 import { api, GeoJsonFc, MapLayerInfo } from "./api";
+import type { DetectModality, DetectRunMode } from "./DetectionTools";
 
 const EMPTY_FC: GeoJsonFc = { type: "FeatureCollection", features: [] };
 
@@ -13,10 +12,14 @@ type Basemap = "osm" | "satellite";
 export interface PlantMapProps {
   mode: PlantMode;
   drawEnabled: boolean;
+  editCorners: boolean;
+  modality: DetectModality;
+  showPanels: DetectRunMode;
   refreshKey: number;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onAoiSaved?: () => void;
+  onCornersEdited?: () => void;
   onError?: (msg: string) => void;
 }
 
@@ -25,17 +28,57 @@ function setGeoJson(map: Map, sourceId: string, data: GeoJsonFc) {
   if (src) src.setData(data as never);
 }
 
-function openRing(coords: number[][]): number[][] {
-  if (coords.length < 2) return coords;
-  const a = coords[0];
-  const b = coords[coords.length - 1];
-  if (a[0] === b[0] && a[1] === b[1]) return coords.slice(0, -1);
-  return coords;
-}
-
 function absoluteTileUrl(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
   return `${window.location.origin}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
+function draftFeatureCollection(corners: number[][]): GeoJsonFc {
+  if (corners.length === 0) return EMPTY_FC;
+  if (corners.length < 3) {
+    return {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: { kind: "draft" },
+          geometry: { type: "LineString", coordinates: corners },
+        },
+      ],
+    };
+  }
+  const ring = [...corners];
+  if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
+    ring.push(ring[0]);
+  }
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: { kind: "draft" },
+        geometry: { type: "Polygon", coordinates: [ring] },
+      },
+    ],
+  };
+}
+
+function openRingFromAoi(fc: GeoJsonFc): number[][] | null {
+  const feat = fc.features?.[0];
+  if (!feat || feat.geometry?.type !== "Polygon") return null;
+  const coords = feat.geometry.coordinates as number[][][];
+  const ring = coords?.[0];
+  if (!ring || ring.length < 4) return null;
+  return ring.slice(0, 4).map((p) => [Number(p[0]), Number(p[1])]);
+}
+
+function mergePanels(rgb: GeoJsonFc, thermal: GeoJsonFc, mode: DetectRunMode): GeoJsonFc {
+  if (mode === "rgb") return rgb;
+  if (mode === "thermal") return thermal;
+  return {
+    type: "FeatureCollection",
+    features: [...(rgb.features || []), ...(thermal.features || [])],
+  };
 }
 
 function addOrthoTileLayers(map: Map, layers: MapLayerInfo[]) {
@@ -63,10 +106,7 @@ function addOrthoTileLayers(map: Map, layers: MapLayerInfo[]) {
         id: `${srcId}-raster`,
         type: "raster",
         source: srcId,
-        paint: {
-          "raster-opacity": 1,
-          "raster-fade-duration": 0,
-        },
+        paint: { "raster-opacity": 1, "raster-fade-duration": 0 },
       },
       before,
     );
@@ -96,34 +136,137 @@ function applyBasemap(map: Map, basemap: Basemap) {
 export function PlantMap(props: PlantMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
-  const drawRef = useRef<MapboxDraw | null>(null);
   const layersRef = useRef<MapLayerInfo[]>([]);
   const readyRef = useRef(false);
+  const cornersRef = useRef<number[][]>([]);
+  const markersRef = useRef<Marker[]>([]);
+  const editMarkersRef = useRef<Marker[]>([]);
+  const editRingRef = useRef<number[][]>([]);
+  const drawEnabledRef = useRef(props.drawEnabled && props.mode === "detection");
+  const editCornersRef = useRef(props.editCorners && props.mode === "detection");
+  const modalityRef = useRef(props.modality);
   const [rgbOpacity, setRgbOpacity] = useState(0.92);
   const [thermalOpacity, setThermalOpacity] = useState(0);
   const [basemap, setBasemap] = useState<Basemap>("satellite");
   const [mapReady, setMapReady] = useState(false);
+  const [cornerCount, setCornerCount] = useState(0);
   const propsRef = useRef(props);
   propsRef.current = props;
   const opacityRef = useRef({ rgb: 0.92, thermal: 0 });
   opacityRef.current = { rgb: rgbOpacity, thermal: thermalOpacity };
+  drawEnabledRef.current = props.drawEnabled && props.mode === "detection";
+  editCornersRef.current = props.editCorners && props.mode === "detection";
+  modalityRef.current = props.modality;
+
+  const clearDraft = useCallback((map?: Map | null) => {
+    cornersRef.current = [];
+    setCornerCount(0);
+    for (const m of markersRef.current) m.remove();
+    markersRef.current = [];
+    const m = map ?? mapRef.current;
+    if (m?.getSource("aoi-draft")) {
+      setGeoJson(m, "aoi-draft", EMPTY_FC);
+    }
+  }, []);
+
+  const clearEditMarkers = useCallback(() => {
+    for (const m of editMarkersRef.current) m.remove();
+    editMarkersRef.current = [];
+    editRingRef.current = [];
+  }, []);
 
   const loadVectors = useCallback(async (map: Map) => {
+    const modality = propsRef.current.modality;
+    const showPanels = propsRef.current.showPanels;
     try {
-      const [aoi, grid, panels, pairs] = await Promise.all([
-        api.detectionGeojson("aoi"),
-        api.detectionGeojson("grid"),
-        api.detectionGeojson("panels"),
+      const [aoi, grid, panelsRgb, panelsTh, pairs] = await Promise.all([
+        api.detectionGeojson("aoi", modality),
+        api.detectionGeojson("grid", modality),
+        api.detectionGeojson("panels", "rgb"),
+        api.detectionGeojson("panels", "thermal"),
         api.segmentationPairsGeojson(),
       ]);
       setGeoJson(map, "aoi", aoi);
       setGeoJson(map, "grid", grid);
-      setGeoJson(map, "panels", panels);
+      setGeoJson(map, "panels", mergePanels(panelsRgb, panelsTh, showPanels));
       setGeoJson(map, "pairs", pairs);
+      return aoi;
     } catch (e) {
       console.error(e);
+      return null;
     }
   }, []);
+
+  const finishAoi = useCallback(
+    async (map: Map, ring: number[][]) => {
+      try {
+        await api.putAoi(
+          ring.map((p) => [p[0], p[1]]),
+          { modality: modalityRef.current },
+        );
+        clearDraft(map);
+        await loadVectors(map);
+        propsRef.current.onAoiSaved?.();
+      } catch (err) {
+        propsRef.current.onError?.(String(err));
+        clearDraft(map);
+      }
+    },
+    [clearDraft, loadVectors],
+  );
+
+  const commitEditedCorners = useCallback(
+    async (map: Map, ring: number[][]) => {
+      try {
+        await api.putAoi(
+          ring.map((p) => [p[0], p[1]]),
+          { modality: modalityRef.current, regenerate_grid: true },
+        );
+        setGeoJson(map, "aoi-draft", EMPTY_FC);
+        await loadVectors(map);
+        propsRef.current.onCornersEdited?.();
+      } catch (err) {
+        propsRef.current.onError?.(String(err));
+      }
+    },
+    [loadVectors],
+  );
+
+  const syncEditMarkers = useCallback(
+    async (map: Map) => {
+      clearEditMarkers();
+      if (!editCornersRef.current) return;
+      const aoi = await api.detectionGeojson("aoi", modalityRef.current);
+      const ring = openRingFromAoi(aoi);
+      if (!ring) return;
+      editRingRef.current = ring.map((p) => [...p]);
+      setGeoJson(map, "aoi-draft", draftFeatureCollection(editRingRef.current));
+
+      ring.forEach((pt, idx) => {
+        const el = document.createElement("div");
+        el.className = "aoi-corner-marker aoi-corner-edit";
+        el.textContent = String(idx + 1);
+        const marker = new maplibregl.Marker({ element: el, draggable: true })
+          .setLngLat(pt as LngLatLike)
+          .addTo(map);
+        marker.on("drag", () => {
+          const ll = marker.getLngLat();
+          editRingRef.current[idx] = [ll.lng, ll.lat];
+          setGeoJson(map, "aoi-draft", draftFeatureCollection(editRingRef.current));
+        });
+        marker.on("dragend", () => {
+          const ll = marker.getLngLat();
+          editRingRef.current[idx] = [ll.lng, ll.lat];
+          void commitEditedCorners(
+            map,
+            editRingRef.current.map((p) => [...p]),
+          );
+        });
+        editMarkersRef.current.push(marker);
+      });
+    },
+    [clearEditMarkers, commitEditedCorners],
+  );
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -151,18 +294,8 @@ export function PlantMap(props: PlantMapProps) {
           },
         },
         layers: [
-          {
-            id: "basemap-osm",
-            type: "raster",
-            source: "basemap-osm",
-            layout: { visibility: "none" },
-          },
-          {
-            id: "basemap-sat",
-            type: "raster",
-            source: "basemap-sat",
-            layout: { visibility: "visible" },
-          },
+          { id: "basemap-osm", type: "raster", source: "basemap-osm", layout: { visibility: "none" } },
+          { id: "basemap-sat", type: "raster", source: "basemap-sat", layout: { visibility: "visible" } },
         ],
       },
       center: [12.5, 42.0],
@@ -172,58 +305,71 @@ export function PlantMap(props: PlantMapProps) {
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     mapRef.current = map;
 
-    const draw = new MapboxDraw({
-      displayControlsDefault: false,
-      controls: {},
-      defaultMode: "simple_select",
-    });
-    drawRef.current = draw;
-
-    const onDrawCreate = async (e: {
-      features: Array<{ geometry: { type: string; coordinates: number[][][] } }>;
-    }) => {
-      const feat = e.features[0];
-      if (!feat || feat.geometry.type !== "Polygon") return;
-      const ring = openRing(feat.geometry.coordinates[0] as number[][]);
-      if (ring.length !== 4) {
-        propsRef.current.onError?.(
-          "AOI needs exactly 4 corners — click four points then double-click to finish",
-        );
-        draw.deleteAll();
+    const onMapClick = (ev: maplibregl.MapMouseEvent) => {
+      if (editCornersRef.current) return;
+      if (!drawEnabledRef.current) {
+        const feats = map.queryRenderedFeatures(ev.point, {
+          layers: ["panels-fill", "pairs-line"].filter((lid) => map.getLayer(lid)),
+        });
+        if (!feats.length) propsRef.current.onSelect(null);
         return;
       }
-      try {
-        await api.putAoi(ring.map((p) => [p[0], p[1]]));
-        draw.deleteAll();
-        await loadVectors(map);
-        propsRef.current.onAoiSaved?.();
-      } catch (err) {
-        propsRef.current.onError?.(String(err));
-        draw.deleteAll();
+
+      ev.preventDefault();
+      const pt: number[] = [ev.lngLat.lng, ev.lngLat.lat];
+      const next = [...cornersRef.current, pt];
+      cornersRef.current = next;
+      setCornerCount(next.length);
+
+      const el = document.createElement("div");
+      el.className = "aoi-corner-marker";
+      el.textContent = String(next.length);
+      markersRef.current.push(new maplibregl.Marker({ element: el }).setLngLat(pt as LngLatLike).addTo(map));
+
+      setGeoJson(map, "aoi-draft", draftFeatureCollection(next));
+
+      if (next.length >= 4) {
+        void finishAoi(map, next.slice(0, 4));
       }
     };
 
     map.on("load", async () => {
+      map.addSource("aoi-draft", { type: "geojson", data: EMPTY_FC as never });
       for (const id of ["aoi", "grid", "panels", "pairs"] as const) {
         map.addSource(id, { type: "geojson", data: EMPTY_FC as never });
       }
+
+      map.addLayer({
+        id: "aoi-draft-fill",
+        type: "fill",
+        source: "aoi-draft",
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#e6a23c", "fill-opacity": 0.45 },
+      });
+      map.addLayer({
+        id: "aoi-draft-line",
+        type: "line",
+        source: "aoi-draft",
+        paint: { "line-color": "#e6a23c", "line-width": 3 },
+      });
+
       map.addLayer({
         id: "aoi-fill",
         type: "fill",
         source: "aoi",
-        paint: { "fill-color": "#3ecf8e", "fill-opacity": 0.12 },
+        paint: { "fill-color": "#e6a23c", "fill-opacity": 0.28 },
       });
       map.addLayer({
         id: "aoi-line",
         type: "line",
         source: "aoi",
-        paint: { "line-color": "#3ecf8e", "line-width": 2 },
+        paint: { "line-color": "#e6a23c", "line-width": 2.5 },
       });
       map.addLayer({
         id: "grid-line",
         type: "line",
         source: "grid",
-        paint: { "line-color": "#5b9fd4", "line-width": 1, "line-opacity": 0.85 },
+        paint: { "line-color": "#5b9fd4", "line-width": 1.25, "line-opacity": 0.9 },
       });
       map.addLayer({
         id: "panels-fill",
@@ -234,7 +380,12 @@ export function PlantMap(props: PlantMapProps) {
             "case",
             ["==", ["get", "id"], propsRef.current.selectedId ?? ""],
             "#e6a23c",
-            "#5b9fd4",
+            [
+              "case",
+              ["==", ["get", "modality"], "thermal"],
+              "#c45c26",
+              "#5b9fd4",
+            ],
           ],
           "fill-opacity": 0.35,
         },
@@ -243,7 +394,15 @@ export function PlantMap(props: PlantMapProps) {
         id: "panels-line",
         type: "line",
         source: "panels",
-        paint: { "line-color": "#8ec8f0", "line-width": 1.5 },
+        paint: {
+          "line-color": [
+            "case",
+            ["==", ["get", "modality"], "thermal"],
+            "#e89a6a",
+            "#8ec8f0",
+          ],
+          "line-width": 1.5,
+        },
       });
       map.addLayer({
         id: "pairs-line",
@@ -277,38 +436,27 @@ export function PlantMap(props: PlantMapProps) {
       setMapReady(true);
 
       map.on("click", "panels-fill", (ev) => {
+        if (drawEnabledRef.current || editCornersRef.current) return;
         const f = ev.features?.[0];
-        const id = String(f?.properties?.id ?? "");
-        propsRef.current.onSelect(id || null);
+        propsRef.current.onSelect(String(f?.properties?.id ?? "") || null);
       });
       map.on("click", "pairs-line", (ev) => {
+        if (drawEnabledRef.current || editCornersRef.current) return;
         const f = ev.features?.[0];
-        const id = String(f?.properties?.id ?? "");
-        propsRef.current.onSelect(id || null);
-      });
-      map.on("click", (ev) => {
-        const feats = map.queryRenderedFeatures(ev.point, {
-          layers: ["panels-fill", "pairs-line"].filter((lid) => map.getLayer(lid)),
-        });
-        if (!feats.length) propsRef.current.onSelect(null);
-      });
-      map.on("mouseenter", "panels-fill", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", "panels-fill", () => {
-        map.getCanvas().style.cursor = "";
+        propsRef.current.onSelect(String(f?.properties?.id ?? "") || null);
       });
     });
 
-    map.on("draw.create", onDrawCreate as never);
+    map.on("click", onMapClick);
 
     return () => {
       readyRef.current = false;
       setMapReady(false);
-      map.off("draw.create", onDrawCreate as never);
+      clearDraft(map);
+      clearEditMarkers();
+      map.off("click", onMapClick);
       map.remove();
       mapRef.current = null;
-      drawRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -326,6 +474,17 @@ export function PlantMap(props: PlantMapProps) {
   }, [rgbOpacity, thermalOpacity, mapReady]);
 
   useEffect(() => {
+    if (props.mode !== "detection") return;
+    if (props.modality === "thermal") {
+      setRgbOpacity(0);
+      setThermalOpacity(1);
+    } else {
+      setRgbOpacity(1);
+      setThermalOpacity(0);
+    }
+  }, [props.modality, props.mode]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
     void (async () => {
@@ -338,27 +497,45 @@ export function PlantMap(props: PlantMapProps) {
         /* ignore */
       }
       await loadVectors(map);
+      if (editCornersRef.current) {
+        await syncEditMarkers(map);
+      }
     })();
-  }, [props.refreshKey, loadVectors, mapReady]);
+  }, [props.refreshKey, props.modality, props.showPanels, loadVectors, mapReady, syncEditMarkers]);
 
   useEffect(() => {
     const map = mapRef.current;
-    const draw = drawRef.current;
-    if (!map || !draw) return;
-
-    const hasDraw = map.hasControl(draw as unknown as maplibregl.IControl);
-    if (props.drawEnabled && props.mode === "detection") {
-      if (!hasDraw) map.addControl(draw as unknown as maplibregl.IControl, "top-left");
-      draw.changeMode("draw_polygon");
-    } else if (hasDraw) {
-      try {
-        draw.deleteAll();
-      } catch {
-        /* ignore */
-      }
-      map.removeControl(draw as unknown as maplibregl.IControl);
+    if (!map) return;
+    if (!(props.drawEnabled && props.mode === "detection")) {
+      clearDraft(map);
+      if (!props.editCorners) map.getCanvas().style.cursor = "";
+    } else {
+      map.getCanvas().style.cursor = "crosshair";
     }
-  }, [props.drawEnabled, props.mode]);
+  }, [props.drawEnabled, props.mode, props.editCorners, clearDraft]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    if (props.editCorners && props.mode === "detection") {
+      map.getCanvas().style.cursor = "move";
+      void syncEditMarkers(map);
+    } else {
+      clearEditMarkers();
+      if (map.getSource("aoi-draft") && !props.drawEnabled) {
+        setGeoJson(map, "aoi-draft", EMPTY_FC);
+      }
+      if (!props.drawEnabled) map.getCanvas().style.cursor = "";
+    }
+  }, [
+    props.editCorners,
+    props.mode,
+    props.modality,
+    props.drawEnabled,
+    mapReady,
+    syncEditMarkers,
+    clearEditMarkers,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -367,13 +544,24 @@ export function PlantMap(props: PlantMapProps) {
       "case",
       ["==", ["get", "id"], props.selectedId ?? ""],
       "#e6a23c",
-      "#5b9fd4",
+      ["case", ["==", ["get", "modality"], "thermal"], "#c45c26", "#5b9fd4"],
     ]);
   }, [props.selectedId]);
 
   return (
     <div className="plant-map-root">
       <div className="plant-map-canvas" ref={containerRef} />
+      {props.drawEnabled && props.mode === "detection" && (
+        <div className="aoi-draw-hint">
+          Click 4 corners of the panel block ({cornerCount}/4) — saves on the 4th click (
+          {props.modality.toUpperCase()})
+        </div>
+      )}
+      {props.editCorners && props.mode === "detection" && (
+        <div className="aoi-draw-hint">
+          Drag the 4 frame corners ({props.modality.toUpperCase()}) — grid regenerates on release
+        </div>
+      )}
       <div className="layer-dock">
         <div className="layer-dock-title">Layers</div>
         <div className="basemap-toggle" role="group" aria-label="Basemap">

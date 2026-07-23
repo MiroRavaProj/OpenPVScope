@@ -1,4 +1,4 @@
-"""OpenCV template matching + NMS (slim rewrite)."""
+"""OpenCV template matching + NMS (aligned with thesis multi-channel weights)."""
 
 from __future__ import annotations
 
@@ -36,45 +36,87 @@ def nms(
     return keep
 
 
+def match_templates(
+    image: np.ndarray,
+    templates: Sequence[np.ndarray],
+    *,
+    threshold: float = 0.5,
+    nms_iou: float = 0.05,
+    use_color: bool = True,
+) -> tuple[list[dict], int]:
+    """
+    Multi-template match over a deskewed search image.
+
+    RGB weights (thesis notebook): gray 10%, R 25%, G 25%, B 40%.
+    Thermal / grayscale-only: 100% grayscale.
+    Collects all peaks then one global NMS (same as old suite).
+
+    Returns (detections, raw_peak_count_before_nms).
+    """
+    if image.ndim == 2:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        use_color = False
+    else:
+        image_rgb = image
+
+    ih, iw = image_rgb.shape[:2]
+    img_gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    method = cv2.TM_CCOEFF_NORMED
+
+    boxes: list[tuple[int, int, int, int]] = []
+    scores: list[float] = []
+
+    for ti, tpl in enumerate(templates):
+        if tpl.ndim == 2:
+            tpl_rgb = cv2.cvtColor(tpl, cv2.COLOR_GRAY2RGB)
+        else:
+            tpl_rgb = tpl
+        th, tw = tpl_rgb.shape[:2]
+        if th < 2 or tw < 2 or th >= ih or tw >= iw:
+            continue
+
+        tpl_gray = cv2.cvtColor(tpl_rgb, cv2.COLOR_RGB2GRAY)
+        if use_color:
+            # Exact notebook weights
+            combined = cv2.matchTemplate(img_gray, tpl_gray, method) * 0.1
+            combined = combined + cv2.matchTemplate(image_rgb[:, :, 0], tpl_rgb[:, :, 0], method) * 0.25
+            combined = combined + cv2.matchTemplate(image_rgb[:, :, 1], tpl_rgb[:, :, 1], method) * 0.25
+            combined = combined + cv2.matchTemplate(image_rgb[:, :, 2], tpl_rgb[:, :, 2], method) * 0.40
+        else:
+            combined = cv2.matchTemplate(img_gray, tpl_gray, method)
+
+        ys, xs = np.where(combined >= threshold)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            boxes.append((int(x), int(y), int(tw), int(th)))
+            scores.append(float(combined[y, x]))
+
+    if not boxes:
+        return [], 0
+
+    raw = len(boxes)
+    keep = nms(boxes, scores, nms_iou)
+    return (
+        [{"bbox": boxes[i], "confidence": scores[i], "template_index": 0} for i in keep],
+        raw,
+    )
+
+
+# Back-compat alias used by older tests / callers
 def match_template_multichannel(
     image_rgb: np.ndarray,
     template_rgb: np.ndarray,
     *,
-    threshold: float = 0.55,
-    nms_iou: float = 0.15,
+    threshold: float = 0.5,
+    nms_iou: float = 0.05,
 ) -> list[dict]:
-    """
-    Detect template occurrences in an RGB uint8 image.
-    Returns [{bbox: (x,y,w,h), confidence: float}, ...] in image pixel coords.
-    """
-    if image_rgb.ndim != 3 or template_rgb.ndim != 3:
-        raise ValueError("image and template must be HxWx3 RGB")
-    th, tw = template_rgb.shape[:2]
-    ih, iw = image_rgb.shape[:2]
-    if th >= ih or tw >= iw or th < 2 or tw < 2:
-        return []
-
-    img_g = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-    tpl_g = cv2.cvtColor(template_rgb, cv2.COLOR_RGB2GRAY)
-    method = cv2.TM_CCOEFF_NORMED
-    res = img_g.astype(np.float32) * 0  # placeholder shape
-    res = cv2.matchTemplate(img_g, tpl_g, method) * 0.1
-    for ch in range(3):
-        w = (0.25, 0.25, 0.4)[ch]
-        res = res + cv2.matchTemplate(image_rgb[:, :, ch], template_rgb[:, :, ch], method) * w
-
-    ys, xs = np.where(res >= threshold)
-    if len(xs) == 0:
-        return []
-
-    boxes: list[tuple[int, int, int, int]] = []
-    scores: list[float] = []
-    for x, y in zip(xs.tolist(), ys.tolist()):
-        boxes.append((int(x), int(y), int(tw), int(th)))
-        scores.append(float(res[y, x]))
-
-    keep = nms(boxes, scores, nms_iou)
-    return [{"bbox": boxes[i], "confidence": scores[i]} for i in keep]
+    dets, _ = match_templates(
+        image_rgb,
+        [template_rgb],
+        threshold=threshold,
+        nms_iou=nms_iou,
+        use_color=True,
+    )
+    return dets
 
 
 def extract_patch_rgb(

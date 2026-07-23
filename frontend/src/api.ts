@@ -292,34 +292,57 @@ export const api = {
       has_aoi: boolean;
       has_grid: boolean;
       has_rgb_panels: boolean;
+      has_thermal_panels: boolean;
       panel_count: number;
+      rgb?: { has_aoi: boolean; has_grid: boolean; has_panels: boolean; panel_count: number };
+      thermal?: { has_aoi: boolean; has_grid: boolean; has_panels: boolean; panel_count: number };
+      both_grids_ready?: boolean;
       job?: { running: boolean; error: string | null; result: unknown };
     }>("/api/detection/status"),
-  putAoi: (ring: number[][]) =>
-    req<{ ok: boolean; geojson: GeoJsonFc }>("/api/detection/aoi", {
+  putAoi: (
+    ring: number[][],
+    opts?: { modality?: "rgb" | "thermal"; regenerate_grid?: boolean },
+  ) =>
+    req<{ ok: boolean; geojson: GeoJsonFc; grid?: GeoJsonFc | null }>("/api/detection/aoi", {
       method: "PUT",
       headers: jsonHeaders,
-      body: JSON.stringify({ ring }),
+      body: JSON.stringify({
+        ring,
+        modality: opts?.modality ?? "rgb",
+        regenerate_grid: opts?.regenerate_grid ?? false,
+      }),
     }),
-  generateGrid: (rows: number, cols: number) =>
+  generateGrid: (rows: number, cols: number, modality: "rgb" | "thermal" = "rgb") =>
     req<{ rows: number; cols: number; cell_count: number; geojson: GeoJsonFc }>("/api/detection/grid", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ rows, cols }),
+      body: JSON.stringify({ rows, cols, modality }),
     }),
+  copyGridToThermal: () =>
+    req<{ ok: boolean; thermal_aoi?: GeoJsonFc; thermal_grid?: GeoJsonFc }>(
+      "/api/detection/grid/copy-to-thermal",
+      { method: "POST" },
+    ),
   runDetection: (confidence: number, nms_iou: number) =>
     req<{ started: boolean }>("/api/detection/run", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ confidence, nms_iou }),
+      body: JSON.stringify({ confidence, nms_iou, modality: "both" }),
     }),
   detectionJob: () =>
     req<{ running: boolean; error: string | null; result: unknown }>("/api/detection/job"),
-  detectionGeojson: (name: "aoi" | "grid" | "panels") =>
-    req<GeoJsonFc>(`/api/detection/geojson/${name}`),
-  clearDetection: () => req<{ message: string }>("/api/detection/clear", { method: "POST" }),
-  deletePanel: (id: string) =>
-    req<{ ok: boolean; panel_count: number }>(`/api/detection/panel/${id}`, { method: "DELETE" }),
+  detectionGeojson: (name: "aoi" | "grid" | "panels", modality: "rgb" | "thermal" = "rgb") =>
+    req<GeoJsonFc>(`/api/detection/geojson/${name}?modality=${modality}`),
+  clearDetection: (modality?: "rgb" | "thermal") =>
+    req<{ message: string }>(
+      modality ? `/api/detection/clear?modality=${modality}` : "/api/detection/clear",
+      { method: "POST" },
+    ),
+  deletePanel: (id: string, modality: "rgb" | "thermal" = "rgb") =>
+    req<{ ok: boolean; panel_count: number }>(
+      `/api/detection/panel/${id}?modality=${modality}`,
+      { method: "DELETE" },
+    ),
   segmentation: () => req<{ message: string }>("/api/segmentation/status"),
   segmentationStatus: () =>
     req<{

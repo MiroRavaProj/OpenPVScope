@@ -4,6 +4,11 @@
 #   powershell -File D:\AAA_TESI\OpenPVScope\restart.ps1
 # From repo root:
 #   .\restart.ps1
+#   .\restart.ps1 -ShowConsole   # show uvicorn window for debugging
+
+param(
+  [switch]$ShowConsole
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -65,16 +70,21 @@ if (Test-Path $Static) {
 Copy-Item -Recurse (Join-Path $Frontend "dist") $Static
 Write-Host "==> Static UI → backend/openpvscope/static"
 
-# --- start API ---
-Write-Host "==> Starting uvicorn on http://127.0.0.1:$Port ..."
+# --- start API (hidden console window; access log quiet) ---
+Write-Host "==> Starting uvicorn on http://127.0.0.1:$Port (background)..."
 $env:PYTHONPATH = $Backend
-Start-Process -FilePath $Uvicorn -ArgumentList @(
+# Hidden window: the API must keep running; you don't need to see uvicorn logs.
+# Use -ShowConsole to debug:  .\restart.ps1 -ShowConsole
+$winStyle = if ($ShowConsole) { "Normal" } else { "Hidden" }
+Start-Process -FilePath $Py -ArgumentList @(
+  "-m", "uvicorn",
   "openpvscope.api.app:app",
   "--host", "127.0.0.1",
   "--port", "$Port",
   "--reload",
-  "--reload-dir", $Backend
-) -WorkingDirectory $Backend -WindowStyle Minimized
+  "--reload-dir", $Backend,
+  "--no-access-log"
+) -WorkingDirectory $Backend -WindowStyle $winStyle
 
 Start-Sleep -Seconds 1.2
 try {

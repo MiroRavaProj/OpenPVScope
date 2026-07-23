@@ -1,22 +1,42 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 
+export type DetectModality = "rgb" | "thermal";
+export type DetectRunMode = "rgb" | "thermal" | "both";
+
 export function DetectionTools(props: {
   onRefreshMap: () => void;
   onProjectRefresh: () => void;
   onError: (msg: string) => void;
   drawEnabled: boolean;
   setDrawEnabled: (v: boolean) => void;
+  modality: DetectModality;
+  setModality: (m: DetectModality) => void;
+  editCorners: boolean;
+  setEditCorners: (v: boolean) => void;
 }) {
-  const { onRefreshMap, onProjectRefresh, onError, drawEnabled, setDrawEnabled } = props;
+  const {
+    onRefreshMap,
+    onProjectRefresh,
+    onError,
+    drawEnabled,
+    setDrawEnabled,
+    modality,
+    setModality,
+    editCorners,
+    setEditCorners,
+  } = props;
   const [rows, setRows] = useState(4);
   const [cols, setCols] = useState(10);
-  const [confidence, setConfidence] = useState(0.55);
-  const [nms, setNms] = useState(0.15);
-  const [status, setStatus] = useState<string>("");
-  const [panelCount, setPanelCount] = useState(0);
+  const [confidence, setConfidence] = useState(0.5);
+  const [nms, setNms] = useState(0.05);
+  const [status, setStatus] = useState("");
+  const [rgbCount, setRgbCount] = useState(0);
+  const [thermalCount, setThermalCount] = useState(0);
   const [hasAoi, setHasAoi] = useState(false);
   const [hasGrid, setHasGrid] = useState(false);
+  const [hasRgbGrid, setHasRgbGrid] = useState(false);
+  const [hasThermalGrid, setHasThermalGrid] = useState(false);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -24,14 +44,18 @@ export function DetectionTools(props: {
     try {
       const st = await api.detectionStatus();
       setStatus(st.message);
-      setPanelCount(st.panel_count);
-      setHasAoi(st.has_aoi);
-      setHasGrid(st.has_grid);
+      setRgbCount(st.rgb?.panel_count ?? (st.has_rgb_panels ? st.panel_count : 0));
+      setThermalCount(st.thermal?.panel_count ?? 0);
+      const mod = modality === "thermal" ? st.thermal : st.rgb;
+      setHasAoi(Boolean(mod?.has_aoi ?? (modality === "rgb" && st.has_aoi)));
+      setHasGrid(Boolean(mod?.has_grid ?? (modality === "rgb" && st.has_grid)));
+      setHasRgbGrid(Boolean(st.rgb?.has_grid ?? st.has_grid));
+      setHasThermalGrid(Boolean(st.thermal?.has_grid));
       setRunning(Boolean(st.job?.running));
     } catch (e) {
       onError(String(e));
     }
-  }, [onError]);
+  }, [onError, modality]);
 
   useEffect(() => {
     void refresh();
@@ -69,7 +93,22 @@ export function DetectionTools(props: {
   async function generateGrid() {
     setBusy(true);
     try {
-      await api.generateGrid(rows, cols);
+      await api.generateGrid(rows, cols, modality);
+      setEditCorners(false);
+      await refresh();
+      onRefreshMap();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyToThermal() {
+    setBusy(true);
+    try {
+      await api.copyGridToThermal();
+      setModality("thermal");
       await refresh();
       onRefreshMap();
     } catch (e) {
@@ -94,7 +133,8 @@ export function DetectionTools(props: {
   async function clearAll() {
     setBusy(true);
     try {
-      await api.clearDetection();
+      await api.clearDetection(modality);
+      setEditCorners(false);
       await refresh();
       onRefreshMap();
     } catch (e) {
@@ -104,18 +144,65 @@ export function DetectionTools(props: {
     }
   }
 
+  const bothGridsReady = hasRgbGrid && hasThermalGrid;
+
   return (
     <div className="tool-panel">
       <h3>Detection</h3>
-      <p className="muted tool-hint">{status || "Draw a 4-corner AOI on the map."}</p>
+      <p className="muted tool-hint">
+        Matching searches the deskewed AOI at full resolution; grid cells are templates only. Panels
+        are drawn oriented like the grid. Confirm & detect always runs RGB and thermal.
+      </p>
+      <p className="muted tool-hint">{status}</p>
+
+      <div className="basemap-toggle" role="group" aria-label="Edit modality">
+        <button
+          type="button"
+          className={modality === "rgb" ? "active" : ""}
+          onClick={() => {
+            setModality("rgb");
+            setEditCorners(false);
+            setDrawEnabled(false);
+          }}
+        >
+          RGB
+        </button>
+        <button
+          type="button"
+          className={modality === "thermal" ? "active" : ""}
+          onClick={() => {
+            setModality("thermal");
+            setEditCorners(false);
+            setDrawEnabled(false);
+          }}
+        >
+          Thermal
+        </button>
+      </div>
 
       <label className="tool-field row-check">
         <input
           type="checkbox"
           checked={drawEnabled}
-          onChange={(e) => setDrawEnabled(e.target.checked)}
+          onChange={(e) => {
+            setDrawEnabled(e.target.checked);
+            if (e.target.checked) setEditCorners(false);
+          }}
         />
-        <span>Draw AOI (4 corners)</span>
+        <span>Draw frame (4 corners)</span>
+      </label>
+
+      <label className="tool-field row-check">
+        <input
+          type="checkbox"
+          checked={editCorners}
+          disabled={!hasGrid}
+          onChange={(e) => {
+            setEditCorners(e.target.checked);
+            if (e.target.checked) setDrawEnabled(false);
+          }}
+        />
+        <span>Edit frame corners</span>
       </label>
 
       <div className="tool-grid2">
@@ -142,7 +229,11 @@ export function DetectionTools(props: {
       </div>
 
       <button type="button" disabled={busy || !hasAoi} onClick={generateGrid}>
-        Generate grid
+        Generate grid ({modality.toUpperCase()})
+      </button>
+
+      <button type="button" disabled={busy || !hasRgbGrid} onClick={copyToThermal}>
+        Copy RGB → Thermal
       </button>
 
       <label className="tool-field">
@@ -162,7 +253,7 @@ export function DetectionTools(props: {
           type="number"
           min={0.01}
           max={0.9}
-          step={0.05}
+          step={0.01}
           value={nms}
           onChange={(e) => setNms(Number(e.target.value))}
         />
@@ -171,20 +262,25 @@ export function DetectionTools(props: {
       <button
         type="button"
         className="primary"
-        disabled={busy || running || !hasGrid}
+        disabled={busy || running || !bothGridsReady}
+        title={
+          bothGridsReady
+            ? "Run detection on RGB and thermal"
+            : "Confirm both RGB and thermal grids first (generate + copy)"
+        }
         onClick={runDetect}
       >
-        {running ? "Detecting…" : "Confirm & detect"}
+        {running ? "Detecting RGB + Thermal…" : "Confirm & detect (RGB + Thermal)"}
       </button>
 
       <div className="muted" style={{ fontSize: "0.85rem" }}>
-        Panels: {panelCount}
-        {hasAoi ? " · AOI ✓" : ""}
-        {hasGrid ? " · Grid ✓" : ""}
+        RGB panels: {rgbCount} · Thermal panels: {thermalCount}
+        {hasRgbGrid ? " · RGB grid ✓" : " · RGB grid ✗"}
+        {hasThermalGrid ? " · Thermal grid ✓" : " · Thermal grid ✗"}
       </div>
 
       <button type="button" className="ghost" disabled={busy} onClick={clearAll}>
-        Clear
+        Clear ({modality.toUpperCase()})
       </button>
     </div>
   );

@@ -11,6 +11,9 @@ def __getattr__(name: str) -> Any:
         "generate_grid",
         "load_geojson",
         "save_aoi_geojson",
+        "copy_rgb_grid_to_thermal",
+        "clear_detection",
+        "detection_dir",
     ):
         from openpvscope.detection import pipeline as p
 
@@ -27,6 +30,9 @@ __all__ = [
     "generate_grid",
     "load_geojson",
     "save_aoi_geojson",
+    "copy_rgb_grid_to_thermal",
+    "clear_detection",
+    "detection_dir",
     "detection_job_status",
     "start_detection_job",
 ]

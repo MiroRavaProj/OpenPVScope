@@ -14,15 +14,14 @@ from openpvscope.geo.crs import feature_collection, polygon_feature
 from openpvscope.segmentation.pairing import pair_panels_self
 
 
-def test_regularize_quad_rectangle() -> None:
-    pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (0.0, 4.0)]
+def test_regularize_quad_keeps_side() -> None:
+    """Width must stay on the same side of p0→p1 as the user's p3 (no flip)."""
+    # p0--p1 along +x; p3/p2 below (-y)
+    pts = [(0.0, 0.0), (10.0, 0.0), (10.0, -4.0), (0.0, -4.0)]
     rect = regularize_quad(pts)
-    assert len(rect) == 4
-    # roughly same footprint
-    xs = [p[0] for p in rect]
-    ys = [p[1] for p in rect]
-    assert max(xs) - min(xs) == pytest.approx(10.0, abs=0.01)
-    assert max(ys) - min(ys) == pytest.approx(4.0, abs=0.01)
+    # All rect y should be <= 0 (not flipped above to +y)
+    assert all(p[1] <= 0.01 for p in rect)
+    assert min(p[1] for p in rect) == pytest.approx(-4.0, abs=0.05)
 
 
 def test_build_grid_cells_count() -> None:
@@ -57,6 +56,7 @@ def test_pair_panels_self() -> None:
 def test_aoi_grid_geojson_roundtrip(tmp_path: Path) -> None:
     root = tmp_path / "proj"
     (root / "detection" / "rgb").mkdir(parents=True)
+    (root / "detection" / "thermal").mkdir(parents=True)
     ring = [[12.0, 42.0], [12.001, 42.0], [12.001, 42.001], [12.0, 42.001]]
     save_aoi_geojson(root, ring)
     aoi_path = root / "detection" / "rgb" / "aoi.geojson"
@@ -69,6 +69,48 @@ def test_aoi_grid_geojson_roundtrip(tmp_path: Path) -> None:
     assert result["cell_count"] == 6
     grid = json.loads((root / "detection" / "rgb" / "grid.geojson").read_text(encoding="utf-8"))
     assert len(grid["features"]) == 6
+
+
+def test_copy_rgb_to_thermal_and_edit_aoi(tmp_path: Path) -> None:
+    from openpvscope.detection.pipeline import copy_rgb_grid_to_thermal, detection_status
+
+    root = tmp_path / "proj"
+    (root / "detection" / "rgb").mkdir(parents=True)
+    (root / "detection" / "thermal").mkdir(parents=True)
+    ring = [[12.0, 42.0], [12.001, 42.0], [12.001, 42.001], [12.0, 42.001]]
+    save_aoi_geojson(root, ring, modality="rgb")
+    generate_grid(root, rows=2, cols=3, modality="rgb")
+    copy_rgb_grid_to_thermal(root)
+    assert (root / "detection" / "thermal" / "grid.geojson").is_file()
+
+    edited = [[12.0, 42.0], [12.002, 42.0], [12.002, 42.002], [12.0, 42.002]]
+    save_aoi_geojson(root, edited, modality="thermal", regenerate_grid=True)
+    th_grid = json.loads((root / "detection" / "thermal" / "grid.geojson").read_text(encoding="utf-8"))
+    assert len(th_grid["features"]) == 6
+    st = detection_status(root)
+    assert st["rgb"]["has_grid"]
+    assert st["thermal"]["has_grid"]
+    assert st["thermal"]["has_aoi"]
+
+
+def test_deskew_angle_sign() -> None:
+    from openpvscope.detection.deskew import aoi_deskew_angle_deg
+
+    # Long side nearly east (90°) → little rotation toward 90
+    ring = [[0.0, 0.0], [0.01, 0.001], [0.009, 0.005], [-0.001, 0.004]]
+    angle = aoi_deskew_angle_deg(ring)
+    assert abs(angle) < 45.0
+
+
+def test_oriented_quads_from_seed() -> None:
+    from openpvscope.detection.deskew import oriented_quads_from_seed
+
+    seed = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]
+    # centroid at (1, 0.5)
+    quads = oriented_quads_from_seed(seed, [(11.0, 10.5)])
+    assert len(quads) == 1
+    assert quads[0][0] == pytest.approx([10.0, 10.0])
+    assert quads[0][2] == pytest.approx([12.0, 11.0])
 
 
 def test_polygon_feature_closes_ring() -> None:

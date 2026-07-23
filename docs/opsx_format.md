@@ -34,6 +34,13 @@ C:\Projects\Colleferro_North\          ← user-chosen location
       grid_meta.json
       panels.geojson
       detection_meta.json
+    thermal/
+      aoi.geojson
+      aoi_ring.json
+      grid.geojson
+      grid_meta.json
+      panels.geojson
+      detection_meta.json
   segmentation/
     pairs.json
     pairs.geojson
