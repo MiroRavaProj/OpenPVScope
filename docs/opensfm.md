@@ -22,7 +22,7 @@ fuse_depthmaps
 dense_merging --georeferenced
 ```
 
-Result: `undistorted/depthmaps/ortho.tif` → copied into `.opsx` as `inputs/ortho/rgb.tif` or `thermal.tif`.
+Result: `undistorted/depthmaps/ortho.tif` → copied into the project folder as `inputs/ortho/rgb.tif` or `thermal.tif`.
 
 ## Thermal ingest
 

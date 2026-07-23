@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-OPSX_FORMAT_VERSION = 1
+OPSX_FORMAT_VERSION = 2
 
 PipelineStep = Literal[
     "photogrammetry",

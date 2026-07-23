@@ -26,21 +26,30 @@ def mark_step(
     *,
     skipped: bool = False,
     message: str | None = None,
+    checkpoint: bool = True,
 ) -> Workflow:
+    if checkpoint:
+        store.checkpoint(f"Before {step} → {status.value}")
     wf = store.read_workflow()
+    previous = wf.get(step)
+    already_complete = previous.status in (StepStatus.DONE, StepStatus.SKIPPED)
+
     state = StepState(status=status, skipped=skipped, message=message, updated_at=_now())
     wf.set_step(step, state)
-    # Activate next pending step when completing
-    if status in (StepStatus.DONE, StepStatus.SKIPPED):
+
+    # Unlock the immediate next step only on the *first* completion.
+    # Re-saving an already-done step (e.g. re-confirm alignment) must not
+    # cascade and activate Detection → Segmentation → …
+    if status in (StepStatus.DONE, StepStatus.SKIPPED) and not already_complete:
         idx = PIPELINE_STEPS.index(step)
-        for nxt in PIPELINE_STEPS[idx + 1 :]:
+        if idx + 1 < len(PIPELINE_STEPS):
+            nxt = PIPELINE_STEPS[idx + 1]
             cur = wf.get(nxt)
             if cur.status == StepStatus.PENDING:
                 wf.set_step(
                     nxt,
                     StepState(status=StepStatus.ACTIVE, updated_at=_now()),
                 )
-                break
     store.write_workflow(wf)
     return wf
 
@@ -61,6 +70,7 @@ def skip_photogrammetry_with_geotiffs(
     import shutil
     from pathlib import Path
 
+    store.checkpoint("Before import GeoTIFFs")
     root = store.root
     rgb_dest = ortho_rgb(root)
     thermal_dest = ortho_thermal(root)
@@ -72,4 +82,5 @@ def skip_photogrammetry_with_geotiffs(
         StepStatus.SKIPPED,
         skipped=True,
         message="Imported existing GeoTIFF orthophotos",
+        checkpoint=False,
     )

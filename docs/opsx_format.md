@@ -1,13 +1,21 @@
-# `.opsx` project format
+# Project formats: `.opsx` (live) and `.opsz` (portable)
 
-An **`.opsx`** file is a ZIP archive (like `.docx` / `.qgz`). OpenPVScope is the default app for this extension.
+## Mental model
 
-## Layout
+| Format | Role |
+|--------|------|
+| **`.opsx`** | Live project **descriptor** (JSON). Sits inside a project folder and **references** data folders beside it. Always autosaved. |
+| **`.opsz`** | **Export archive** (ZIP of the whole project folder). Use to share or backup. Import extracts then opens. |
+
+There is **no silent cache folder** for new projects. Creating a project requires choosing a parent directory on disk.
+
+## Live project layout
 
 ```text
-MyPlant.opsx
-  manifest.json                 # format_version, name, ids, timestamps
-  workflow.json                 # per-step status
+C:\Projects\Colleferro_North\          ← user-chosen location
+  Colleferro_North.opsx                ← JSON descriptor (autosaved)
+  manifest.json                        ← sidecar copy
+  workflow.json                        ← sidecar copy
   inputs/
     raw/rgb/
     raw/thermal/
@@ -15,60 +23,68 @@ MyPlant.opsx
     ortho/thermal.tif
     ortho/thermal_aligned.tif
   photogrammetry/
-    rgb_job.json
-    thermal_job.json
-    rgb/                        # OpenSfM dataset (optional, large)
-    thermal/
   alignment/
     gcps.json
     transform.json
   detection/
-    rgb/aoi.geojson
-    rgb/panels.geojson
-    thermal/panels.geojson
+    rgb/
+      aoi.geojson
+      aoi_ring.json
+      grid.geojson
+      grid_meta.json
+      panels.geojson
+      detection_meta.json
   segmentation/
-    pairs.jsonl
-    panels/<uuid>/rgb.png
-    panels/<uuid>/thermal.tif
-    panels/<uuid>/features.json
+    pairs.json
+    pairs.geojson
+    panels/<id>/{rgb.png,thermal.png,thermal.tif,meta.json}
   labels/
-    labels.csv
   models/
   classification/
-    results.geojson
   exports/
+  work/
 ```
 
-## Rules
-
-- `manifest.format_version` is an integer; bump when breaking layout.
-- No UI widget state in the package.
-- No base64 rasters inside JSON.
-- Large GeoTIFFs use ZIP **store** (no recompression).
-- Each pipeline stage owns its folder.
-
-## `manifest.json` (example)
+## `.opsx` JSON (format_version 2)
 
 ```json
 {
-  "format_version": 1,
+  "format_version": 2,
+  "kind": "openpvscope-project",
+  "app": "OpenPVScope",
   "name": "Colleferro North",
-  "created_at": "2026-07-23T16:00:00Z",
-  "updated_at": "2026-07-23T16:00:00Z",
-  "app": "OpenPVScope"
+  "id": "0500c34dfed5",
+  "root": ".",
+  "paths": {
+    "inputs": "inputs",
+    "alignment": "alignment",
+    "workflow": "workflow.json"
+  },
+  "manifest": { "...": "..." },
+  "workflow": { "...": "..." }
 }
 ```
 
-## `workflow.json` (example)
+Paths are **relative** to the folder that contains the `.opsx`, so moving/renaming the whole folder keeps the project valid.
 
-```json
-{
-  "photogrammetry": { "status": "done", "skipped": false },
-  "alignment": { "status": "pending" },
-  "detection": { "status": "pending" },
-  "segmentation": { "status": "pending" },
-  "models": { "status": "pending" },
-  "classification": { "status": "pending" },
-  "outputs": { "status": "pending" }
-}
-```
+## Autosave
+
+Every meaningful change (workflow step, alignment GCPs, orthophoto import, …) writes data files into the project folder and rewrites the `.opsx` descriptor using **atomic writes** (temp file + replace). Closing or crashing does not require a manual Save for recovery: reopen the `.opsx`.
+
+## Undo / redo
+
+Project changes that affect tracked files (workflow, manifest, alignment JSON, and orthophoto GeoTIFFs by default) are checkpointed into `.openpvscope_history/` using **content-addressable storage** (git-style): each unique file is stored once under `objects/` by hash; snapshots are tiny JSON manifests. Unchanged rasters are not duplicated.
+
+**GC** removes object blobs that no snapshot references anymore (after undo trim / redo discard).
+
+**Hardlinks** (same bytes, two names on NTFS) are used when restoring small JSON sidecars for speed; rasters are always copied on restore so in-place GeoTIFF writes cannot corrupt the object store.
+
+Use **← / →** or **Ctrl+Z / Ctrl+Y**. Depth and whether rasters are included are controlled in **Settings**.
+
+## `.opsz` export / import
+
+- **Export full:** zip project data (undo history folder is always excluded)
+- **Export light:** also skip rebuildable prefixes (default `work/`, `photogrammetry/`) — configurable in Settings
+- **Import:** choose `.opsz` + destination folder → extract → open the embedded `.opsx`
+
+Large rasters are stored uncompressed inside the zip (ZIP_STORED) to avoid recompression cost.
