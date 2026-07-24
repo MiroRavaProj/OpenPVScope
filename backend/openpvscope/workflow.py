@@ -27,6 +27,7 @@ def mark_step(
     skipped: bool = False,
     message: str | None = None,
     checkpoint: bool = True,
+    unlock_next: bool = True,
 ) -> Workflow:
     if checkpoint:
         store.checkpoint(f"Before {step} → {status.value}")
@@ -40,7 +41,11 @@ def mark_step(
     # Unlock the immediate next step only on the *first* completion.
     # Re-saving an already-done step (e.g. re-confirm alignment) must not
     # cascade and activate Detection → Segmentation → …
-    if status in (StepStatus.DONE, StepStatus.SKIPPED) and not already_complete:
+    if (
+        unlock_next
+        and status in (StepStatus.DONE, StepStatus.SKIPPED)
+        and not already_complete
+    ):
         idx = PIPELINE_STEPS.index(step)
         if idx + 1 < len(PIPELINE_STEPS):
             nxt = PIPELINE_STEPS[idx + 1]
@@ -66,21 +71,35 @@ def skip_photogrammetry_with_geotiffs(
     rgb_path,
     thermal_path,
 ) -> Workflow:
-    """Copy provided GeoTIFFs into project and mark photogrammetry skipped."""
+    """Copy provided GeoTIFFs into project and mark photogrammetry skipped/done."""
     import shutil
     from pathlib import Path
 
     store.checkpoint("Before import GeoTIFFs")
     root = store.root
-    rgb_dest = ortho_rgb(root)
     thermal_dest = ortho_thermal(root)
-    shutil.copy2(Path(rgb_path), rgb_dest)
     shutil.copy2(Path(thermal_path), thermal_dest)
+
+    has_rgb = rgb_path is not None and str(rgb_path).strip()
+    if has_rgb:
+        rgb_dest = ortho_rgb(root)
+        shutil.copy2(Path(rgb_path), rgb_dest)
+        return mark_step(
+            store,
+            "photogrammetry",
+            StepStatus.SKIPPED,
+            skipped=True,
+            message="Imported existing GeoTIFF orthophotos",
+            checkpoint=False,
+        )
+
+    # Thermal-only import: photogrammetry progress, but alignment stays gated
     return mark_step(
         store,
         "photogrammetry",
-        StepStatus.SKIPPED,
-        skipped=True,
-        message="Imported existing GeoTIFF orthophotos",
+        StepStatus.DONE,
+        skipped=False,
+        message="Imported thermal GeoTIFF — RGB orthophoto still required for alignment",
         checkpoint=False,
+        unlock_next=False,
     )

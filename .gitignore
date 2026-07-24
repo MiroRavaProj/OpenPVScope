@@ -30,6 +30,12 @@ work/
 engines/*
 !engines/.gitkeep
 !engines/README.md
+!engines/opensfm/
+engines/opensfm/**
+!engines/opensfm/README.md
+!engines/dji_tsdk/
+engines/dji_tsdk/**
+!engines/dji_tsdk/README.md
 
 # Secrets / local
 .env

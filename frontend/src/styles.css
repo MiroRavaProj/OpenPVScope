@@ -1435,6 +1435,205 @@ input[type="text"] {
   min-width: 220px;
 }
 
+/* Photogrammetry workspace */
+.photo-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  max-width: 1100px;
+}
+
+.photo-workspace > .card {
+  max-width: none;
+}
+
+.photo-engine-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.photo-engine-head-row h2 {
+  margin: 0;
+}
+
+.photo-wizard-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.photo-wizard-choice {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  color: inherit;
+}
+
+.photo-wizard-choice.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.photo-gate-note {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(255, 180, 80, 0.12);
+  border: 1px solid rgba(255, 180, 80, 0.35);
+  font-size: 0.86rem;
+}
+
+.photo-product-toggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.photo-outputs-list {
+  margin: 0.35rem 0 0.75rem;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+}
+
+.photo-engine-strip .photo-engine-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 0.35rem;
+}
+
+.photo-engine-item {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.photo-engine-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.photo-engine-value {
+  font-size: 0.82rem;
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+.photo-engine-value.warn {
+  color: #e8b86d;
+}
+
+.photo-ready-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.photo-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.photo-badge.ready {
+  color: var(--accent);
+  border-color: rgba(62, 207, 142, 0.45);
+  background: rgba(62, 207, 142, 0.08);
+}
+
+.photo-modality-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.photo-modality-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.photo-modality-card.drag-over {
+  border-color: var(--accent);
+  background: rgba(62, 207, 142, 0.06);
+}
+
+.photo-modality-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.photo-modality-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.photo-drop-hint {
+  margin: 0 0 0.65rem !important;
+  font-size: 0.82rem;
+}
+
+.photo-modality-actions {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.photo-file-count {
+  margin: 0.65rem 0 0 !important;
+  font-size: 0.8rem;
+}
+
+.photo-thermal-params h3,
+.photo-stages h3,
+.photo-skip h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.photo-stages-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.photo-progress-track {
+  margin-top: 0.45rem;
+}
+
+.console-progress-bar.error {
+  background: linear-gradient(90deg, #8f2f2f, var(--danger));
+  box-shadow: none;
+}
+
 @media (max-width: 900px) {
   .app {
     grid-template-columns: 1fr;
@@ -1444,6 +1643,10 @@ input[type="text"] {
     border-bottom: 1px solid var(--border);
   }
   .align-grid {
+    grid-template-columns: 1fr;
+  }
+  .photo-modality-grid,
+  .photo-engine-strip .photo-engine-grid {
     grid-template-columns: 1fr;
   }
 }

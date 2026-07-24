@@ -1,6 +1,11 @@
-# OpenSfM engine folder
+# Bundled engines
 
-Place a built OpenSfM 1.0 tree here (or set `OPENPVSCOPE_OPENSFM_ROOT`).
+Optional native engines shipped beside the app (dev checkout or Windows installer).
 
-See [docs/opensfm.md](../docs/opensfm.md) and
-https://github.com/OpenSfM/OpenSfM/blob/master/doc/building.md
+| Folder | Purpose |
+|--------|---------|
+| [`dji_tsdk/`](dji_tsdk/README.md) | DJI Thermal SDK (`libdirp.dll`), ExifTool, optional MLP |
+
+Photogrammetry engine: install **ODX** (`C:\ODX` or `OPENPVSCOPE_ODX_ROOT`).  
+End users get ODX via **Full** OpenPVScope Setup. Developers: [`scripts/bootstrap_odx.ps1`](../scripts/bootstrap_odx.ps1).  
+Docs: [docs/photogrammetry.md](../docs/photogrammetry.md)

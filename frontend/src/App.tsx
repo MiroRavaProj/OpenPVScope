@@ -9,8 +9,9 @@ import {
 } from "./api";
 import { MapView } from "./MapView";
 import { OrthoAlignmentView } from "./AlignmentView";
+import { PhotogrammetryView } from "./PhotogrammetryView";
 import { SettingsModal } from "./SettingsModal";
-import { ActivityConsole, useConsole } from "./ActivityConsole";
+import { ActivityConsole } from "./ActivityConsole";
 import { PlantWorkspace } from "./PlantWorkspace";
 import { AppLanguage, I18nProvider, isAppLanguage, useT } from "./i18n";
 
@@ -37,7 +38,6 @@ export default function App() {
 
 function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
   const t = useT();
-  const { noteLocal } = useConsole();
   const [project, setProject] = useState<ProjectPayload | null>(null);
   const [step, setStep] = useState<PipelineStep>("photogrammetry");
   const [name, setName] = useState("My PV Plant");
@@ -45,8 +45,7 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [openPath, setOpenPath] = useState("");
-  const [log, setLog] = useState<string[]>([]);
-  const [openclOk, setOpenclOk] = useState<boolean | null>(null);
+  const [odxOk, setOdxOk] = useState<boolean | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [exportMode, setExportMode] = useState<"full" | "light">("full");
@@ -85,7 +84,9 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
   }, [applySettings]);
 
   useEffect(() => {
-    api.opencl().then((r) => setOpenclOk(r.available)).catch(() => setOpenclOk(false));
+    api.health()
+      .then((r) => setOdxOk(Boolean(r.odx?.available)))
+      .catch(() => setOdxOk(false));
     loadWelcomeExtras();
   }, [loadWelcomeExtras]);
 
@@ -270,51 +271,6 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
     }
   }
 
-  async function onSkipGeotiff(rgb: File, thermal: File) {
-    setBusy(true);
-    setError(null);
-    noteLocal(t("app.consoleImportGeotiffs"), t("app.consoleUploadingOrthos"));
-    try {
-      const p = await api.skipPhotogrammetry(rgb, thermal);
-      setProject(p);
-      setStep("alignment");
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runModality(modality: "rgb" | "thermal") {
-    setBusy(true);
-    setError(null);
-    noteLocal(t("app.consoleOpensfm", { modality }), t("app.consoleStartingPhoto"));
-    try {
-      await api.runPhoto(modality);
-      let cancelled = false;
-      const poll = async () => {
-        try {
-          const st = await api.photoStatus(modality);
-          if (cancelled) return;
-          setLog(st.log);
-          if (!st.running) {
-            setBusy(false);
-            await refresh();
-            return;
-          }
-        } catch {
-          /* ignore */
-        }
-        if (!cancelled) window.setTimeout(() => void poll(), 1500);
-      };
-      void poll();
-      // Note: no cleanup handle if user navigates away; poll stops when job ends.
-    } catch (e) {
-      setError(String(e));
-      setBusy(false);
-    }
-  }
-
   const settingsButton = (
     <button
       type="button"
@@ -489,8 +445,8 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
               <strong>{stepLabel(step)}</strong>
               <div className="muted" title={project.root}>
                 {project.opsx_path ?? project.root}
-                {openclOk === false && ` · ${t("app.openclMissing")}`}
-                {openclOk === true && ` · ${t("app.openclOk")}`}
+                {odxOk === false && ` · ${t("app.odxMissing")}`}
+                {odxOk === true && ` · ${t("app.odxOk")}`}
               </div>
             </div>
             <div className="row topbar-actions">
@@ -532,18 +488,14 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
           <div className={`content${step === "detection" || step === "segmentation" ? " content-plant" : ""}`}>
             {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
             {step === "photogrammetry" && (
-              <PhotogrammetryPanel
-                busy={busy}
-                log={log}
-                onSkip={onSkipGeotiff}
-                onUpload={async (modality, files) => {
-                  noteLocal(
-                    t("app.consoleUploadImages"),
-                    t("app.consoleSavingFiles", { modality }),
-                  );
-                  await api.uploadRaw(modality, files);
+              <PhotogrammetryView
+                onProjectRefresh={refresh}
+                onError={setError}
+                onOrthosReady={() => {
+                  void refresh();
                 }}
-                onRun={runModality}
+                busy={busy}
+                setBusy={setBusy}
               />
             )}
             {step === "alignment" && (
@@ -642,75 +594,6 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
         )}
       </div>
       <ActivityConsole />
-    </div>
-  );
-}
-
-function PhotogrammetryPanel(props: {
-  busy: boolean;
-  log: string[];
-  onSkip: (rgb: File, thermal: File) => void;
-  onUpload: (m: "rgb" | "thermal", files: FileList) => Promise<void>;
-  onRun: (m: "rgb" | "thermal") => void;
-}) {
-  const t = useT();
-  const [rgbFile, setRgbFile] = useState<File | null>(null);
-  const [thFile, setThFile] = useState<File | null>(null);
-
-  return (
-    <div className="card">
-      <h2>{t("app.photoTitle")}</h2>
-      <p>{t("app.photoBlurb")}</p>
-      <div className="row" style={{ marginBottom: "0.75rem" }}>
-        <label>
-          {t("app.photoRgbImages")}{" "}
-          <input
-            type="file"
-            multiple
-            onChange={async (e) => {
-              if (e.target.files?.length) await props.onUpload("rgb", e.target.files);
-            }}
-          />
-        </label>
-        <button disabled={props.busy} onClick={() => props.onRun("rgb")}>
-          {t("app.photoRunRgb")}
-        </button>
-      </div>
-      <div className="row" style={{ marginBottom: "1rem" }}>
-        <label>
-          {t("app.photoThermalImages")}{" "}
-          <input
-            type="file"
-            multiple
-            onChange={async (e) => {
-              if (e.target.files?.length) await props.onUpload("thermal", e.target.files);
-            }}
-          />
-        </label>
-        <button disabled={props.busy} onClick={() => props.onRun("thermal")}>
-          {t("app.photoRunThermal")}
-        </button>
-      </div>
-      <hr style={{ borderColor: "var(--border)" }} />
-      <p style={{ marginTop: "1rem" }}>{t("app.photoSkipIntro")}</p>
-      <div className="row">
-        <label>
-          {t("app.photoRgbGeotiff")}{" "}
-          <input type="file" accept=".tif,.tiff" onChange={(e) => setRgbFile(e.target.files?.[0] ?? null)} />
-        </label>
-        <label>
-          {t("app.photoThermalGeotiff")}{" "}
-          <input type="file" accept=".tif,.tiff" onChange={(e) => setThFile(e.target.files?.[0] ?? null)} />
-        </label>
-        <button
-          className="primary"
-          disabled={props.busy || !rgbFile || !thFile}
-          onClick={() => rgbFile && thFile && props.onSkip(rgbFile, thFile)}
-        >
-          {t("app.photoImportContinue")}
-        </button>
-      </div>
-      {props.log.length > 0 && <div className="log" style={{ marginTop: "1rem" }}>{props.log.join("\n")}</div>}
     </div>
   );
 }

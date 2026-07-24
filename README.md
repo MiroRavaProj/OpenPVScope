@@ -8,7 +8,7 @@ It is a ground-up rewrite of the earlier *Solar PV Anomaly Detection Suite* for 
 
 A guided pipeline:
 
-1. **Photogrammetry** — build RGB and thermal orthophotos with [OpenSfM](https://github.com/OpenSfM/OpenSfM) 1.0  
+1. **Photogrammetry** — build RGB and thermal orthophotos with [ODX](https://github.com/WebODM/ODX) (includes OpenSfM 1.0)  
 2. **Alignment** — 4-point co-registration of thermal → RGB (metadata-only georef rewrite)  
 3. **Detection** — panel localization  
 4. **Segmentation** — RGB↔thermal pairing and thermal features  
@@ -20,12 +20,12 @@ Projects live on disk as a folder plus a **`.opsx`** JSON descriptor (always aut
 ## For users (Windows)
 
 1. Download the latest **OpenPVScope Setup** from [Releases](../../releases) (when published).  
-2. Install and open **OpenPVScope** from the Start Menu.  
+2. Install (Full type includes **ODX** photogrammetry) and open **OpenPVScope** from the Start Menu.  
 3. On first screen: **Create** a project (name + save folder) or **Open** an existing `.opsx`.  
 4. Work normally — everything autosaves; reopen the `.opsx` after a crash to continue.  
 5. **Export .opsz** when you need a portable archive to share or back up.
 
-**Requirements:** Windows 10+, and for photogrammetry a GPU with **OpenCL** (Intel/AMD integrated graphics usually work with current drivers). Dense OpenSfM stages need OpenCL; see [docs/opensfm.md](docs/opensfm.md).
+**Requirements:** Windows 10+. Photogrammetry needs [ODX](https://github.com/WebODM/ODX) — installed automatically by **Full** Setup (or separately). See [docs/photogrammetry.md](docs/photogrammetry.md).
 
 ## For developers
 
@@ -67,14 +67,22 @@ Or desktop shell:
 
 See [docs/architecture.md](docs/architecture.md), [docs/opsx_format.md](docs/opsx_format.md), and [docs/packaging.md](docs/packaging.md).
 
-### OpenSfM (optional for photogrammetry)
+### ODX (photogrammetry)
 
-Follow [OpenSfM building.md](https://github.com/OpenSfM/OpenSfM/blob/master/doc/building.md) (conda lockfile). Set `OPENPVSCOPE_OPENSFM_ROOT` to the OpenSfM repo root, or place an env under `engines/opensfm/`.
+**End users:** choose **Full** when running OpenPVScope Setup — ODX installs silently to `C:\ODX`.
+
+**Developers** (local checkout without the Windows installer):
+
+```powershell
+.\scripts\bootstrap_odx.ps1
+```
+
+Or install from [ODX Releases](https://github.com/WebODM/ODX/releases). Optionally set `OPENPVSCOPE_ODX_ROOT` (default discovery includes `C:\ODX`).
 
 ## License
 
 MIT — see [LICENSE](LICENSE).  
-OpenSfM and related engines have their own licenses; see attributions when bundling.
+ODX is AGPL-3.0 and runs as a separate companion install; DJI SDK and other engines have their own licenses.
 
 ## Citation
 

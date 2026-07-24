@@ -171,9 +171,22 @@ try {
   Write-Host "==> Could not probe PIPELINE_REV: $_" -ForegroundColor Yellow
 }
 
+# Optional ODX tip (do not block app start)
+$odxRoot = $env:OPENPVSCOPE_ODX_ROOT
+$odxOk = $false
+if ($odxRoot -and (Test-Path (Join-Path $odxRoot "run.bat"))) {
+  $odxOk = $true
+} elseif (Test-Path "C:\ODX\run.bat") {
+  $odxOk = $true
+}
+
 Write-Host ""
 Write-Host "Open: http://127.0.0.1:$Port" -ForegroundColor Green
 Write-Host "Venv: $Venv (Python $ver)"
+if (-not $odxOk) {
+  Write-Host "Tip: ODX not found (C:\ODX\run.bat or OPENPVSCOPE_ODX_ROOT)." -ForegroundColor DarkGray
+  Write-Host "     End users: re-run OpenPVScope Full Setup. Developers: .\scripts\bootstrap_odx.ps1" -ForegroundColor DarkGray
+}
 if (-not $Dev) {
   Write-Host "Tip: use .\restart.ps1 -Dev only when you need --reload" -ForegroundColor DarkGray
 }

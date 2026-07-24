@@ -332,7 +332,32 @@ export function ActivityConsole() {
               </div>
             </div>
           )}
-          <div className="console-log" ref={listRef}>
+          <div
+            className="console-log"
+            ref={listRef}
+            onCopy={(ev) => {
+              const root = listRef.current;
+              const sel = window.getSelection();
+              if (!root || !sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+              const range = sel.getRangeAt(0);
+              const parts: string[] = [];
+              root.querySelectorAll<HTMLElement>(".console-line").forEach((line) => {
+                try {
+                  if (!range.intersectsNode(line)) return;
+                } catch {
+                  return;
+                }
+                const time = line.querySelector(".console-time")?.textContent?.trim() ?? "";
+                const level = line.querySelector(".console-level")?.textContent?.trim() ?? "";
+                const step = line.querySelector(".console-step")?.textContent?.trim() ?? "";
+                const msg = line.querySelector(".console-msg")?.textContent?.trim() ?? "";
+                parts.push([time, level, step, msg].filter((x) => x.length > 0).join("\t"));
+              });
+              if (parts.length === 0) return;
+              ev.preventDefault();
+              ev.clipboardData.setData("text/plain", parts.join("\n"));
+            }}
+          >
             {visible.length === 0 ? (
               <div className="muted console-empty">{t("console.empty")}</div>
             ) : (

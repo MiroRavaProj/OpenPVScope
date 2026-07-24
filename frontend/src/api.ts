@@ -30,6 +30,9 @@ export interface ProjectPayload {
   root: string;
   opsx_path: string | null;
   orthos_ready: boolean;
+  photo_setup?: PhotoSetup | null;
+  rgb_ortho_missing?: boolean;
+  thermal_ortho_ready?: boolean;
   layers: Array<Record<string, unknown>>;
   history?: HistoryState;
 }
@@ -99,6 +102,105 @@ export interface MapLayerInfo {
   height?: number;
 }
 
+export type PhotoModality = "rgb" | "thermal";
+
+export interface OpenClInfo {
+  available: boolean;
+  devices?: Array<{ platform?: string; device?: string; type?: string }>;
+  clinfo?: string;
+  error?: string;
+}
+
+export interface DjiSdkInfo {
+  available: boolean;
+  path?: string | null;
+  dll?: string | null;
+  error?: string | null;
+}
+
+export interface OdxInfo {
+  available: boolean;
+  root?: string | null;
+  run_script?: string | null;
+  error?: string | null;
+}
+
+export interface PhotoJobPublic {
+  status: string;
+  current_command: string | null;
+  stage_index: number;
+  stage_total: number;
+  stage_name: string | null;
+  error: string | null;
+  ortho_path: string | null;
+  cancelable: boolean;
+}
+
+export interface PhotoStatus {
+  log: string[];
+  running: boolean;
+  job: PhotoJobPublic | null;
+  ortho_exists: boolean;
+  odx: OdxInfo;
+  odx_root: string | null;
+  opencl: OpenClInfo;
+  dji_sdk: DjiSdkInfo;
+}
+
+export interface PhotoThermalParams {
+  emissivity?: number;
+  distance?: number;
+  humidity?: number;
+  reflection?: number;
+  parametric_fallback?: boolean;
+}
+
+export type PhotoModalities = "rgb_and_thermal" | "thermal_only";
+export type PhotoMode = "process" | "skip";
+export type OdxQuality = "ultra" | "high" | "medium" | "low" | "lowest";
+
+export interface OdxOptions {
+  orthophoto_resolution: number;
+  feature_quality: OdxQuality;
+  pc_quality: OdxQuality;
+  fast_orthophoto: boolean;
+  crop: number;
+}
+
+export interface PhotoProducts {
+  ortho: boolean;
+  dense_pc: boolean;
+  sparse_pc: boolean;
+  dsm: boolean;
+  dtm: boolean;
+}
+
+export interface PhotoSetup {
+  wizard_complete: boolean;
+  modalities: PhotoModalities;
+  mode: PhotoMode;
+  odx: OdxOptions;
+  products: PhotoProducts;
+}
+
+export interface PhotoRunBody extends PhotoThermalParams {
+  odx?: Partial<OdxOptions>;
+  products?: Partial<PhotoProducts>;
+}
+
+export interface PhotoProductItem {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  size: number;
+}
+
+export interface PhotoRawList {
+  files: Array<{ name: string; size: number }>;
+  count: number;
+}
+
 const jsonHeaders = { "Content-Type": "application/json" };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -111,7 +213,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => req<{ status: string; version: string; opencl: { available: boolean } }>("/api/health"),
+  health: () =>
+    req<{
+      status: string;
+      version: string;
+      odx: OdxInfo;
+      odx_root: string | null;
+      opencl: OpenClInfo;
+      dji_sdk: DjiSdkInfo;
+    }>("/api/health"),
   createProject: (name: string, project_dir: string) =>
     req<ProjectPayload>("/api/projects", {
       method: "POST",
@@ -158,28 +268,53 @@ export const api = {
   pickOpsx: () => req<{ path: string | null }>("/api/system/pick-opsx", { method: "POST" }),
   pickOpszOpen: () => req<{ path: string | null }>("/api/system/pick-opsz-open", { method: "POST" }),
   pickOpszSave: () => req<{ path: string | null }>("/api/system/pick-opsz-save", { method: "POST" }),
-  skipPhotogrammetry: async (rgb: File, thermal: File) => {
+  skipPhotogrammetry: async (thermal: File, rgb?: File | null) => {
     const fd = new FormData();
-    fd.append("rgb", rgb);
     fd.append("thermal", thermal);
+    if (rgb) fd.append("rgb", rgb);
     const res = await fetch("/api/photogrammetry/skip", { method: "POST", body: fd });
     if (!res.ok) throw new Error(await res.text());
     return res.json() as Promise<ProjectPayload>;
   },
-  uploadRaw: async (modality: "rgb" | "thermal", files: FileList) => {
+  uploadRaw: async (modality: PhotoModality, files: FileList | File[]) => {
     const fd = new FormData();
     Array.from(files).forEach((f) => fd.append("files", f));
     const res = await fetch(`/api/photogrammetry/upload-raw/${modality}`, { method: "POST", body: fd });
     if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return res.json() as Promise<{ saved: string[]; formats?: unknown[]; count: number }>;
   },
-  runPhoto: (modality: "rgb" | "thermal") =>
-    req<{ started: boolean }>(`/api/photogrammetry/run/${modality}`, { method: "POST" }),
-  photoStatus: (modality: "rgb" | "thermal") =>
-    req<{ log: string[]; ortho_exists: boolean; running: boolean }>(
-      `/api/photogrammetry/status/${modality}`,
+  listRaw: (modality: PhotoModality) =>
+    req<PhotoRawList>(`/api/photogrammetry/raw/${modality}`),
+  getPhotoSetup: () => req<PhotoSetup>("/api/photogrammetry/setup"),
+  putPhotoSetup: (body: Partial<PhotoSetup> & { wizard_complete?: boolean }) =>
+    req<PhotoSetup>("/api/photogrammetry/setup", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
+  listPhotoProducts: (modality: PhotoModality) =>
+    req<{ modality: string; products: PhotoProductItem[] }>(
+      `/api/photogrammetry/products/${modality}`,
     ),
-  opencl: () => req<{ available: boolean; devices?: unknown[] }>("/api/photogrammetry/opencl"),
+  runPhoto: (modality: PhotoModality, body?: PhotoRunBody) =>
+    req<{ started: boolean; modality: string }>(`/api/photogrammetry/run/${modality}`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body ?? {}),
+    }),
+  runPhotoBoth: (body?: PhotoRunBody) =>
+    req<{ started: boolean; modality: string }>("/api/photogrammetry/run-both", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body ?? {}),
+    }),
+  cancelPhoto: (modality: PhotoModality) =>
+    req<{ cancelled: boolean; modality: string }>(`/api/photogrammetry/cancel/${modality}`, {
+      method: "POST",
+    }),
+  photoStatus: (modality: PhotoModality) =>
+    req<PhotoStatus>(`/api/photogrammetry/status/${modality}`),
+  opencl: () => req<OpenClInfo>("/api/photogrammetry/opencl"),
   mapLayers: () =>
     req<{
       layers: MapLayerInfo[];

@@ -40,8 +40,17 @@ from openpvscope.ingest import (
     render_geotiff_xyz_tile,
 )
 from openpvscope.ml import ml_status
-from openpvscope.opensfm import OpenSfMRunner, find_opensfm_root, probe_opencl
-from openpvscope.opensfm.runner import OPENSFM_COMMANDS
+from openpvscope.photogrammetry.opencl import probe_opencl
+from openpvscope.photogrammetry import (
+    ODX_STAGES,
+    ODXRunner,
+    build_odx_argv,
+    find_odx_root,
+    list_exported_products,
+    load_setup,
+    probe_odx,
+    save_setup,
+)
 from openpvscope.project import get_store
 from openpvscope.project.paths import ortho_rgb, ortho_thermal, ortho_thermal_aligned
 from openpvscope.segmentation import (
@@ -57,7 +66,7 @@ from openpvscope.settings import (
     load_settings,
     update_settings,
 )
-from openpvscope.thermal import detect_thermal_format
+from openpvscope.thermal import detect_thermal_format, probe_dji_sdk
 from openpvscope.workflow import mark_step, orthos_ready, skip_photogrammetry_with_geotiffs
 
 app = FastAPI(title="OpenPVScope", version=__version__)
@@ -72,6 +81,28 @@ app.add_middleware(
 
 _sfm_logs: dict[str, list[str]] = {"rgb": [], "thermal": []}
 _sfm_thread: threading.Thread | None = None
+_photo_runner: ODXRunner | None = None
+_photo_runner_root: Path | None = None
+
+_RAW_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".tif", ".tiff", ".png", ".rjpeg"}
+
+
+def _get_photo_runner(project_root: Path) -> ODXRunner:
+    """Durable ODXRunner tied to the current project root."""
+    global _photo_runner, _photo_runner_root
+    root = Path(project_root).resolve()
+    if _photo_runner is None or _photo_runner_root != root:
+        _photo_runner = ODXRunner(root)
+        _photo_runner_root = root
+    return _photo_runner
+
+
+def _list_raw_images(raw_dir: Path) -> list[Path]:
+    if not raw_dir.is_dir():
+        return []
+    return sorted(
+        p for p in raw_dir.iterdir() if p.is_file() and p.suffix.lower() in _RAW_IMAGE_SUFFIXES
+    )
 
 
 class CreateProjectBody(BaseModel):
@@ -99,8 +130,44 @@ class AlignBody(BaseModel):
 
 
 class SkipPhotoBody(BaseModel):
-    rgb_path: str
+    rgb_path: str | None = None
     thermal_path: str
+
+
+class OdxOptionsBody(BaseModel):
+    orthophoto_resolution: float = Field(default=2.0, gt=0.0, le=100.0)
+    feature_quality: Literal["ultra", "high", "medium", "low", "lowest"] = "high"
+    pc_quality: Literal["ultra", "high", "medium", "low", "lowest"] = "medium"
+    fast_orthophoto: bool = False
+    crop: float = Field(default=3.0, ge=0.0, le=100.0)
+
+
+class PhotoProductsBody(BaseModel):
+    ortho: bool = True
+    dense_pc: bool = False
+    sparse_pc: bool = False
+    dsm: bool = False
+    dtm: bool = False
+
+
+class PhotogrammetryRunBody(BaseModel):
+    """Thermal conversion params + ODX options + product toggles."""
+
+    emissivity: float = Field(default=0.95, ge=0.0, le=1.0)
+    distance: float = Field(default=5.0, ge=0.0)
+    humidity: float = Field(default=50.0, ge=0.0, le=100.0)
+    reflection: float = Field(default=25.0)
+    parametric_fallback: bool = False
+    odx: OdxOptionsBody | None = None
+    products: PhotoProductsBody | None = None
+
+
+class PhotogrammetrySetupBody(BaseModel):
+    wizard_complete: bool = False
+    modalities: Literal["rgb_and_thermal", "thermal_only"] = "rgb_and_thermal"
+    mode: Literal["process", "skip"] = "process"
+    odx: OdxOptionsBody | None = None
+    products: PhotoProductsBody | None = None
 
 
 class SettingsPatch(BaseModel):
@@ -199,8 +266,10 @@ def health() -> dict[str, Any]:
         "version": __version__,
         "pipeline_rev": PIPELINE_REV,
         "segmentation_rev": SEGMENTATION_REV,
-        "opensfm_root": str(find_opensfm_root()) if find_opensfm_root() else None,
+        "odx": probe_odx(),
+        "odx_root": str(find_odx_root()) if find_odx_root() else None,
         "opencl": probe_opencl(),
+        "dji_sdk": probe_dji_sdk(),
     }
 
 
@@ -412,12 +481,17 @@ def _project_payload(store) -> dict[str, Any]:
             except Exception as e:
                 layers.append({"id": key, "path": str(path), "error": str(e)})
     hist = store.history_status()
+    setup = load_setup(root) if store.is_open else None
     return {
         "manifest": manifest.model_dump(mode="json"),
         "workflow": workflow.model_dump(mode="json"),
         "root": str(root),
         "opsx_path": str(store.opsx_path) if store.opsx_path else None,
         "orthos_ready": orthos_ready(store),
+        "photo_setup": setup,
+        "rgb_ortho_missing": not ortho_rgb(root).is_file(),
+        "thermal_ortho_ready": ortho_thermal(root).is_file()
+        or ortho_thermal_aligned(root).is_file(),
         "layers": layers,
         "history": {
             "can_undo": hist.can_undo,
@@ -430,32 +504,73 @@ def _project_payload(store) -> dict[str, Any]:
     }
 
 
+@app.get("/api/photogrammetry/setup")
+def get_photogrammetry_setup() -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    return load_setup(store.root)
+
+
+@app.put("/api/photogrammetry/setup")
+def put_photogrammetry_setup(body: PhotogrammetrySetupBody) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    data = body.model_dump(mode="json")
+    saved = save_setup(store.root, data)
+    store.autosave()
+    return saved
+
+
+@app.get("/api/photogrammetry/products/{modality}")
+def photogrammetry_products(modality: str) -> dict[str, Any]:
+    if modality not in ("rgb", "thermal"):
+        raise HTTPException(400, "modality must be rgb or thermal")
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    items = list_exported_products(store.root, modality)
+    return {"modality": modality, "products": items}
+
+
 @app.post("/api/photogrammetry/skip")
 async def skip_photogrammetry(
-    rgb: UploadFile = File(...),
     thermal: UploadFile = File(...),
+    rgb: UploadFile | None = File(None),
 ) -> dict[str, Any]:
     store = get_store()
     console = get_console()
     if not store.is_open:
         raise HTTPException(404, "No project open")
+    setup = load_setup(store.root)
+    need_rgb = setup.get("modalities") != "thermal_only"
+    if need_rgb and rgb is None:
+        raise HTTPException(400, "RGB GeoTIFF required for rgb_and_thermal setup")
     console.begin_job("Import GeoTIFFs", detail="Uploading orthophotos")
     try:
         tmp = store.root / "work" / "uploads"
         tmp.mkdir(parents=True, exist_ok=True)
-        rgb_path = tmp / (rgb.filename or "rgb.tif")
         thermal_path = tmp / (thermal.filename or "thermal.tif")
-        console.set_progress(20, detail="Saving RGB GeoTIFF", step="rgb")
-        with rgb_path.open("wb") as f:
-            shutil.copyfileobj(rgb.file, f)
-        console.set_progress(55, detail="Saving thermal GeoTIFF", step="thermal")
+        console.set_progress(20, detail="Saving thermal GeoTIFF", step="thermal")
         with thermal_path.open("wb") as f:
             shutil.copyfileobj(thermal.file, f)
+        rgb_path = None
+        if rgb is not None:
+            rgb_path = tmp / (rgb.filename or "rgb.tif")
+            console.set_progress(55, detail="Saving RGB GeoTIFF", step="rgb")
+            with rgb_path.open("wb") as f:
+                shutil.copyfileobj(rgb.file, f)
         console.set_progress(80, detail="Updating project", step="workflow")
         skip_photogrammetry_with_geotiffs(store, rgb_path, thermal_path)
         _refresh_overlays(store)
         store.autosave()
-        console.end_job(ok=True, message="GeoTIFFs imported — continue to ortho alignment")
+        msg = (
+            "GeoTIFFs imported — continue to ortho alignment"
+            if orthos_ready(store)
+            else "Thermal imported — add RGB orthophoto before alignment"
+        )
+        console.end_job(ok=True, message=msg)
     except Exception as e:
         console.end_job(ok=False, message=str(e))
         raise
@@ -467,6 +582,10 @@ def skip_photogrammetry_paths(body: SkipPhotoBody) -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
+    setup = load_setup(store.root)
+    need_rgb = setup.get("modalities") != "thermal_only"
+    if need_rgb and not body.rgb_path:
+        raise HTTPException(400, "rgb_path required for rgb_and_thermal setup")
     skip_photogrammetry_with_geotiffs(store, body.rgb_path, body.thermal_path)
     _refresh_overlays(store)
     store.autosave()
@@ -495,13 +614,152 @@ async def upload_raw(modality: str, files: list[UploadFile] = File(...)) -> dict
     return {"saved": saved, "formats": formats, "count": len(saved)}
 
 
+@app.get("/api/photogrammetry/raw/{modality}")
+def list_raw_images(modality: str) -> dict[str, Any]:
+    if modality not in ("rgb", "thermal"):
+        raise HTTPException(400, "modality must be rgb or thermal")
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    raw_dir = store.root / "inputs" / "raw" / modality
+    files: list[dict[str, Any]] = []
+    if raw_dir.is_dir():
+        for p in sorted(raw_dir.iterdir()):
+            if not p.is_file():
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            files.append({"name": p.name, "size": size})
+    return {"files": files, "count": len(files)}
+
+
 @app.get("/api/photogrammetry/opencl")
 def opencl_status() -> dict[str, Any]:
     return probe_opencl()
 
 
+def _thermal_prepare_kwargs(body: PhotogrammetryRunBody) -> dict[str, Any]:
+    return {
+        "emissivity": body.emissivity,
+        "distance": body.distance,
+        "humidity": body.humidity,
+        "reflection": body.reflection,
+        "parametric_fallback": body.parametric_fallback,
+    }
+
+
+def _odx_run_kwargs(body: PhotogrammetryRunBody | None) -> tuple[list[str], dict[str, bool]]:
+    params = body or PhotogrammetryRunBody()
+    odx = params.odx.model_dump(mode="json") if params.odx else None
+    products = params.products.model_dump(mode="json") if params.products else None
+    if products is None and odx is None:
+        # Fall back to saved setup on the project
+        store = get_store()
+        if store.is_open:
+            setup = load_setup(store.root)
+            odx = setup.get("odx")
+            products = setup.get("products")
+    argv = build_odx_argv(odx, products)
+    from openpvscope.photogrammetry.setup import _merge_products
+
+    return argv, _merge_products(products)
+
+
+def _run_odx_modality(
+    store,
+    console,
+    runner: ODXRunner,
+    modality: str,
+    *,
+    thermal_kwargs: dict[str, Any] | None = None,
+    odx_args: list[str] | None = None,
+    products: dict[str, bool] | None = None,
+) -> None:
+    """Prepare dataset and run ODX for one modality (blocking)."""
+    raw_dir = store.root / "inputs" / "raw" / modality
+    images = _list_raw_images(raw_dir)
+    if not images:
+        raise FileNotFoundError(f"No images in inputs/raw/{modality}")
+
+    if modality == "thermal":
+        kwargs = thermal_kwargs or {}
+        runner.prepare_dataset(modality, images, **kwargs)
+    else:
+        runner.prepare_dataset(modality, images)
+
+    _sfm_logs[modality] = []
+    n_cmds = len(ODX_STAGES)
+    step_i = 0
+
+    def on_log(line: str) -> None:
+        nonlocal step_i
+        _sfm_logs[modality].append(line)
+        level = "verbose"
+        if line.startswith(">>>"):
+            level = "info"
+            step_i += 1
+            pct = min(95.0, (step_i / max(1, n_cmds)) * 100.0)
+            console.set_progress(
+                pct,
+                detail=line.replace(">>> ", ""),
+                step=f"odx/{modality}",
+                level="info",
+            )
+        else:
+            lower = line.lower()
+            for i, stage in enumerate(ODX_STAGES):
+                if stage in lower:
+                    pct = min(95.0, ((i + 1) / max(1, n_cmds)) * 100.0)
+                    console.set_progress(
+                        pct,
+                        detail=stage,
+                        step=f"odx/{modality}",
+                        level="info",
+                    )
+                    break
+            console.log(line, level=level, step=f"odx/{modality}")
+
+    runner.run(
+        modality,
+        on_log=on_log,
+        extra_args=odx_args,
+        products=products,
+    )
+
+
+def _maybe_mark_photogrammetry_done(store) -> None:
+    setup = load_setup(store.root)
+    thermal_ok = ortho_thermal(store.root).is_file()
+    rgb_ok = ortho_rgb(store.root).is_file()
+    if setup.get("modalities") == "thermal_only":
+        if thermal_ok:
+            if rgb_ok:
+                mark_step(
+                    store,
+                    "photogrammetry",
+                    StepStatus.DONE,
+                    message="ODX thermal complete",
+                )
+            else:
+                mark_step(
+                    store,
+                    "photogrammetry",
+                    StepStatus.DONE,
+                    message="ODX thermal complete — RGB orthophoto still required for alignment",
+                    unlock_next=False,
+                )
+        return
+    if rgb_ok and thermal_ok:
+        mark_step(store, "photogrammetry", StepStatus.DONE, message="ODX complete")
+
+
 @app.post("/api/photogrammetry/run/{modality}")
-def run_photogrammetry(modality: str) -> dict[str, Any]:
+def run_photogrammetry(
+    modality: str,
+    body: PhotogrammetryRunBody | None = None,
+) -> dict[str, Any]:
     global _sfm_thread
     if modality not in ("rgb", "thermal"):
         raise HTTPException(400, "modality must be rgb or thermal")
@@ -510,68 +768,138 @@ def run_photogrammetry(modality: str) -> dict[str, Any]:
     if not store.is_open:
         raise HTTPException(404, "No project open")
 
-    raw_dir = store.root / "inputs" / "raw" / modality
-    images = sorted(
-        p
-        for p in raw_dir.iterdir()
-        if p.suffix.lower() in {".jpg", ".jpeg", ".tif", ".tiff", ".png", ".rjpeg"}
-    )
+    images = _list_raw_images(store.root / "inputs" / "raw" / modality)
     if not images:
         raise HTTPException(400, f"No images in inputs/raw/{modality}")
 
-    runner = OpenSfMRunner(store.root)
-    runner.prepare_dataset(modality, images)
-    _sfm_logs[modality] = []
-    n_cmds = len(OPENSFM_COMMANDS) + 1  # + dense_merging
+    if _sfm_thread and _sfm_thread.is_alive():
+        raise HTTPException(409, "A photogrammetry job is already running")
+
+    if not probe_odx().get("available"):
+        raise HTTPException(
+            400,
+            "ODX not found. Re-run OpenPVScope Full Setup, or install ODX from https://github.com/WebODM/ODX/releases",
+        )
+
+    runner = _get_photo_runner(store.root)
+    params = body or PhotogrammetryRunBody()
+    thermal_kwargs = _thermal_prepare_kwargs(params) if modality == "thermal" else None
+    odx_args, products = _odx_run_kwargs(params)
 
     def work() -> None:
-        console.begin_job(f"OpenSfM ({modality})", detail="Starting pipeline")
-        step_i = 0
-
-        def on_log(line: str) -> None:
-            nonlocal step_i
-            _sfm_logs[modality].append(line)
-            level = "verbose"
-            if line.startswith(">>>"):
-                level = "info"
-                step_i += 1
-                pct = min(95.0, (step_i / max(1, n_cmds)) * 100.0)
-                console.set_progress(pct, detail=line.replace(">>> ", ""), step=f"opensfm/{modality}", level="info")
-            else:
-                console.log(line, level=level, step=f"opensfm/{modality}")
-
+        console.begin_job(f"ODX ({modality})", detail="Starting pipeline")
         try:
-            runner.run(modality, on_log=on_log)
-            if modality == "thermal" and ortho_rgb(store.root).is_file():
-                mark_step(store, "photogrammetry", StepStatus.DONE, message="OpenSfM complete")
-            elif modality == "rgb" and ortho_thermal(store.root).is_file():
-                mark_step(store, "photogrammetry", StepStatus.DONE, message="OpenSfM complete")
+            _run_odx_modality(
+                store,
+                console,
+                runner,
+                modality,
+                thermal_kwargs=thermal_kwargs,
+                odx_args=odx_args,
+                products=products,
+            )
+            _maybe_mark_photogrammetry_done(store)
             _refresh_overlays(store)
-            console.end_job(ok=True, message=f"OpenSfM {modality} finished")
+            console.end_job(ok=True, message=f"ODX {modality} finished")
         except Exception as e:
             _sfm_logs[modality].append(f"ERROR: {e}")
             console.end_job(ok=False, message=str(e))
 
-    if _sfm_thread and _sfm_thread.is_alive():
-        raise HTTPException(409, "A photogrammetry job is already running")
     _sfm_thread = threading.Thread(target=work, daemon=True)
     _sfm_thread.start()
     return {"started": True, "modality": modality}
 
 
-@app.get("/api/photogrammetry/status/{modality}")
-def photogrammetry_status(modality: str) -> dict[str, Any]:
+@app.post("/api/photogrammetry/run-both")
+def run_photogrammetry_both(body: PhotogrammetryRunBody | None = None) -> dict[str, Any]:
+    global _sfm_thread
+    store = get_store()
+    console = get_console()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+
+    for modality in ("rgb", "thermal"):
+        if not _list_raw_images(store.root / "inputs" / "raw" / modality):
+            raise HTTPException(400, f"No images in inputs/raw/{modality}")
+
+    if _sfm_thread and _sfm_thread.is_alive():
+        raise HTTPException(409, "A photogrammetry job is already running")
+
+    if not probe_odx().get("available"):
+        raise HTTPException(
+            400,
+            "ODX not found. Re-run OpenPVScope Full Setup, or install ODX from https://github.com/WebODM/ODX/releases",
+        )
+
+    runner = _get_photo_runner(store.root)
+    params = body or PhotogrammetryRunBody()
+    thermal_kwargs = _thermal_prepare_kwargs(params)
+    odx_args, products = _odx_run_kwargs(params)
+
+    def work() -> None:
+        console.begin_job("ODX (rgb+thermal)", detail="Starting RGB then thermal")
+        try:
+            for modality in ("rgb", "thermal"):
+                console.set_progress(
+                    0,
+                    detail=f"Preparing {modality}",
+                    step=f"odx/{modality}",
+                    level="info",
+                )
+                _run_odx_modality(
+                    store,
+                    console,
+                    runner,
+                    modality,
+                    thermal_kwargs=thermal_kwargs if modality == "thermal" else None,
+                    odx_args=odx_args,
+                    products=products,
+                )
+            _maybe_mark_photogrammetry_done(store)
+            _refresh_overlays(store)
+            console.end_job(ok=True, message="ODX rgb+thermal finished")
+        except Exception as e:
+            for modality in ("rgb", "thermal"):
+                _sfm_logs[modality].append(f"ERROR: {e}")
+            console.end_job(ok=False, message=str(e))
+
+    _sfm_thread = threading.Thread(target=work, daemon=True)
+    _sfm_thread.start()
+    return {"started": True, "modality": "both"}
+
+
+@app.post("/api/photogrammetry/cancel/{modality}")
+def cancel_photogrammetry(modality: str) -> dict[str, Any]:
+    if modality not in ("rgb", "thermal"):
+        raise HTTPException(400, "modality must be rgb or thermal")
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
-    runner = OpenSfMRunner(store.root)
+    runner = _get_photo_runner(store.root)
+    cancelled = runner.request_cancel(modality)
+    return {"cancelled": cancelled, "modality": modality}
+
+
+@app.get("/api/photogrammetry/status/{modality}")
+def photogrammetry_status(modality: str) -> dict[str, Any]:
+    if modality not in ("rgb", "thermal"):
+        raise HTTPException(400, "modality must be rgb or thermal")
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    runner = _get_photo_runner(store.root)
     job = runner.get_job(modality)
     ortho = store.root / "inputs" / "ortho" / f"{modality}.tif"
+    odx = probe_odx()
     return {
-        "job": job.__dict__ if job else None,
         "log": _sfm_logs.get(modality, [])[-200:],
-        "ortho_exists": ortho.is_file(),
         "running": bool(_sfm_thread and _sfm_thread.is_alive()),
+        "job": job.to_public_dict() if job else None,
+        "ortho_exists": ortho.is_file(),
+        "odx": odx,
+        "odx_root": odx.get("root"),
+        "opencl": probe_opencl(),
+        "dji_sdk": probe_dji_sdk(),
     }
 
 
