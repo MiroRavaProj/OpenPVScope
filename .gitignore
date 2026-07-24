@@ -32,6 +32,7 @@ work/
 .env
 .env.local
 .cursor/
+/cursor
 
 # Packaging artifacts
 packaging/windows/Output/
