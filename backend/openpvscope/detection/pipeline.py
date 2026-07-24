@@ -30,7 +30,7 @@ from openpvscope.geo.crs import (
     transformer_to_wgs84,
 )
 from openpvscope.io_atomic import atomic_write_json
-from openpvscope.project.paths import ortho_rgb, ortho_thermal_aligned
+from openpvscope.project.paths import ortho_rgb, ortho_thermal, ortho_thermal_aligned
 
 ProgressCb = Callable[[float | None, str], None]
 # Extended: optional level kw via a thin wrapper in jobs — pipeline uses prog/vlog
@@ -60,10 +60,16 @@ def _ortho_for(root: Path, modality: Modality) -> Path:
         if not path.is_file():
             raise FileNotFoundError("RGB orthophoto required")
         return path
-    path = ortho_thermal_aligned(root)
-    if not path.is_file():
-        raise FileNotFoundError("Aligned thermal orthophoto required — complete ortho alignment first")
-    return path
+    aligned = ortho_thermal_aligned(root)
+    if aligned.is_file():
+        return aligned
+    raw = ortho_thermal(root)
+    if raw.is_file():
+        # Thermal-only (or pre-alignment) projects use the raw thermal ortho
+        return raw
+    raise FileNotFoundError(
+        "Thermal orthophoto required — run photogrammetry (or complete alignment for RGB+thermal)"
+    )
 
 
 def _read_json(path: Path) -> dict | None:
@@ -492,22 +498,41 @@ def detection_status(project_root: Path) -> dict[str, Any]:
         parts.append(f"RGB {rgb['panel_count']}")
     if th["has_panels"]:
         parts.append(f"Thermal {th['panel_count']}")
-    message = (
-        f"Panels: {', '.join(parts)}"
-        if parts
-        else "Draw AOI on RGB, generate grid, copy to thermal, then run detection on both"
-    )
+
+    thermal_only = False
+    try:
+        from openpvscope.photogrammetry.setup import load_setup
+
+        thermal_only = load_setup(root).get("modalities") == "thermal_only"
+    except Exception:
+        thermal_only = False
+
+    if parts:
+        message = f"Panels: {', '.join(parts)}"
+    elif thermal_only:
+        if th["has_grid"]:
+            message = "Thermal grid ready — run thermal detection"
+        elif th["has_aoi"]:
+            message = "Thermal AOI ready — generate grid, then run detection"
+        else:
+            message = "Draw AOI on thermal, generate grid, then run detection"
+    else:
+        message = "Draw AOI on RGB, generate grid, copy to thermal, then run detection on both"
+
+    primary = th if thermal_only else rgb
     return {
         "ready": ready,
         "message": message,
-        "has_aoi": rgb["has_aoi"],
-        "has_grid": rgb["has_grid"],
+        "has_aoi": primary["has_aoi"],
+        "has_grid": primary["has_grid"],
         "has_rgb_panels": rgb["has_panels"],
         "has_thermal_panels": th["has_panels"],
         "panel_count": total,
         "rgb": rgb,
         "thermal": th,
-        "both_grids_ready": bool(rgb["has_grid"] and th["has_grid"]),
+        "both_grids_ready": (
+            bool(th["has_grid"]) if thermal_only else bool(rgb["has_grid"] and th["has_grid"])
+        ),
         "defaults": {
             "confidence": DEFAULT_CONFIDENCE,
             "nms_iou": DEFAULT_NMS_IOU,

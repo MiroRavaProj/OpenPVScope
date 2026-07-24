@@ -60,9 +60,30 @@ def mark_step(
 
 
 def orthos_ready(store: ProjectStore) -> bool:
+    """True when enough orthophotos exist to continue past photogrammetry."""
     root = store.root
+    try:
+        from openpvscope.photogrammetry.setup import load_setup
+
+        setup = load_setup(root)
+        if setup.get("modalities") == "thermal_only":
+            return ortho_thermal(root).is_file() or ortho_thermal_aligned(root).is_file()
+    except Exception:
+        pass
     return ortho_rgb(root).is_file() and (
         ortho_thermal_aligned(root).is_file() or ortho_thermal(root).is_file()
+    )
+
+
+def skip_alignment_for_thermal_only(store: ProjectStore) -> Workflow:
+    """Mark alignment skipped so detection unlocks (thermal-only projects)."""
+    return mark_step(
+        store,
+        "alignment",
+        StepStatus.SKIPPED,
+        skipped=True,
+        message="Alignment skipped (thermal-only project)",
+        checkpoint=False,
     )
 
 
@@ -93,13 +114,14 @@ def skip_photogrammetry_with_geotiffs(
             checkpoint=False,
         )
 
-    # Thermal-only import: photogrammetry progress, but alignment stays gated
-    return mark_step(
+    # Thermal-only import: unlock detection by skipping alignment
+    mark_step(
         store,
         "photogrammetry",
         StepStatus.DONE,
         skipped=False,
-        message="Imported thermal GeoTIFF — RGB orthophoto still required for alignment",
+        message="Imported thermal GeoTIFF (thermal-only)",
         checkpoint=False,
-        unlock_next=False,
+        unlock_next=True,
     )
+    return skip_alignment_for_thermal_only(store)

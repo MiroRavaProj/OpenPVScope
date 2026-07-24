@@ -137,7 +137,7 @@ export const it: Dict = {
       bothTitle: "RGB + termico (consigliato)",
       bothHint: "Pipeline completa: ortofoto, allineamento, detection e pairing.",
       thermalTitle: "Solo termico",
-      thermalHint: "Elabora il termico ora. Serve comunque un’ortofoto RGB prima dell’allineamento.",
+      thermalHint: "Ortofoto termica → salta allineamento → detection e segmentazione solo termici.",
       q2: "Hai già le ortofoto GeoTIFF?",
       processTitle: "No — esegui ODX dalle foto grezze",
       processHint: "Carica i frame del drone e genera le ortofoto con ODX.",
@@ -147,8 +147,8 @@ export const it: Dict = {
       back: "Indietro",
       continue: "Continua",
       changeSetup: "Cambia configurazione…",
-      rgbStillNeeded:
-        "Setup solo termico: l’ortofoto RGB è ancora necessaria prima di allineamento e detection.",
+      thermalOnlyNote:
+        "Solo termico: l’allineamento viene saltato. Con l’ortofoto termica pronta, continua con detection e segmentazione termiche.",
     },
     odxOpts: {
       title: "Opzioni ODX",
@@ -232,6 +232,7 @@ export const it: Dict = {
     generateGrid: "Genera griglia ({{modality}})",
     generateGridTitle:
       "Crea una griglia iniziale {{rows}}×{{cols}} dentro l'AOI {{modality}}. L'angolo di deskew proviene dall'AOI; i template vengono ritagliati da queste celle.",
+    generateGridNeedAoi: "Disegna prima la cornice a 4 angoli (AOI), poi genera la griglia.",
     copyRgbThermal: "Copia RGB → Termico",
     copyRgbThermalTitle:
       "Copia l'AOI + griglia RGB nella modalità termica (stessi angoli/celle in WGS84). Poi regola gli angoli termici se necessario.",

@@ -20,6 +20,9 @@ export function DetectionTools(props: {
   setDisplayConfidenceRgb: (v: number) => void;
   displayConfidenceThermal: number;
   setDisplayConfidenceThermal: (v: number) => void;
+  thermalOnly?: boolean;
+  /** Bump when AOI/grid changes outside this panel (e.g. map draw/edit). */
+  statusEpoch?: number;
 }) {
   const {
     onRefreshMap,
@@ -35,6 +38,8 @@ export function DetectionTools(props: {
     setDisplayConfidenceRgb,
     displayConfidenceThermal,
     setDisplayConfidenceThermal,
+    thermalOnly = false,
+    statusEpoch = 0,
   } = props;
   const t = useT();
   const [rows, setRows] = useState(4);
@@ -77,7 +82,7 @@ export function DetectionTools(props: {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, statusEpoch]);
 
   useEffect(() => {
     if (!hasGrid) {
@@ -162,6 +167,7 @@ export function DetectionTools(props: {
         thermal_temp_cap: thermalCap,
         advanced_validation: advancedValidation,
         fine_tuning_confidence: fineTuneConf,
+        modality: thermalOnly ? "thermal" : "both",
       });
       setRunning(true);
     } catch (e) {
@@ -186,6 +192,7 @@ export function DetectionTools(props: {
   }
 
   const bothGridsReady = hasRgbGrid && hasThermalGrid;
+  const canRun = thermalOnly ? hasThermalGrid : bothGridsReady;
   const tplHint =
     numTemplates <= 0
       ? t("detection.templatesAll", { count: gridCellCount || "grid" })
@@ -210,9 +217,12 @@ export function DetectionTools(props: {
       </div>
       {!toolsMin && (
         <>
-      <p className="muted tool-hint">{t("detection.hint")}</p>
+      <p className="muted tool-hint">
+        {thermalOnly ? t("detection.hintThermalOnly") : t("detection.hint")}
+      </p>
       <p className="muted tool-hint">{status}</p>
 
+      {!thermalOnly && (
       <div
         className="basemap-toggle"
         role="group"
@@ -244,6 +254,10 @@ export function DetectionTools(props: {
           {t("detection.thermal")}
         </button>
       </div>
+      )}
+      {thermalOnly && (
+        <p className="muted tool-hint">{t("detection.thermalOnlyBadge")}</p>
+      )}
 
       <label
         className="tool-field row-check"
@@ -310,13 +324,19 @@ export function DetectionTools(props: {
 
       <button
         type="button"
+        className={hasAoi && !hasGrid ? "primary" : undefined}
         disabled={busy || !hasAoi}
-        title={t("detection.generateGridTitle", { rows, cols, modality: modality.toUpperCase() })}
+        title={
+          hasAoi
+            ? t("detection.generateGridTitle", { rows, cols, modality: modality.toUpperCase() })
+            : t("detection.generateGridNeedAoi")
+        }
         onClick={generateGrid}
       >
         {t("detection.generateGrid", { modality: modality.toUpperCase() })}
       </button>
 
+      {!thermalOnly && (
       <button
         type="button"
         disabled={busy || !hasRgbGrid}
@@ -325,7 +345,9 @@ export function DetectionTools(props: {
       >
         {t("detection.copyRgbThermal")}
       </button>
+      )}
 
+      {!thermalOnly && (
       <label
         className="tool-field"
         title={t("detection.confRgbTitle")}
@@ -340,6 +362,7 @@ export function DetectionTools(props: {
           onChange={(e) => setConfidenceRgb(Number(e.target.value))}
         />
       </label>
+      )}
       <label
         className="tool-field"
         title={t("detection.confThermalTitle")}
@@ -422,6 +445,7 @@ export function DetectionTools(props: {
           onChange={(e) => setFineTuneConf(Number(e.target.value))}
         />
       </label>
+      {!thermalOnly && (
       <label
         className="tool-field"
         title={t("detection.mapFilterRgbTitle")}
@@ -436,6 +460,7 @@ export function DetectionTools(props: {
           onChange={(e) => setDisplayConfidenceRgb(Number(e.target.value))}
         />
       </label>
+      )}
       <label
         className="tool-field"
         title={t("detection.mapFilterThermalTitle")}
@@ -454,28 +479,47 @@ export function DetectionTools(props: {
       <button
         type="button"
         className="primary"
-        disabled={busy || running || !bothGridsReady}
-        title={bothGridsReady ? t("detection.runTitleReady") : t("detection.runTitleBlocked")}
+        disabled={busy || running || !canRun}
+        title={
+          canRun
+            ? thermalOnly
+              ? t("detection.runTitleReadyThermal")
+              : t("detection.runTitleReady")
+            : thermalOnly
+              ? t("detection.runTitleBlockedThermal")
+              : t("detection.runTitleBlocked")
+        }
         onClick={runDetect}
       >
-        {running ? t("detection.running") : t("detection.run")}
+        {running
+          ? t("detection.running")
+          : thermalOnly
+            ? t("detection.runThermalOnly")
+            : t("detection.run")}
       </button>
 
       <div
         className="detection-counts"
         title={t("detection.countsTitle")}
       >
+        {!thermalOnly && (
         <span className="legend-item">
           <i className="legend-swatch legend-swatch-rgb" aria-hidden />
           {t("detection.legendRgb", { count: rgbCount })}
         </span>
+        )}
         <span className="legend-item">
           <i className="legend-swatch legend-swatch-thermal" aria-hidden />
           {t("detection.legendThermal", { count: thermalCount })}
         </span>
         <span className="muted" style={{ fontSize: "0.8rem" }}>
-          {hasRgbGrid ? t("detection.gridRgbOk") : t("detection.gridRgbMissing")} ·{" "}
-          {hasThermalGrid ? t("detection.gridThermalOk") : t("detection.gridThermalMissing")}
+          {thermalOnly
+            ? hasThermalGrid
+              ? t("detection.gridThermalOk")
+              : t("detection.gridThermalMissing")
+            : `${hasRgbGrid ? t("detection.gridRgbOk") : t("detection.gridRgbMissing")} · ${
+                hasThermalGrid ? t("detection.gridThermalOk") : t("detection.gridThermalMissing")
+              }`}
         </span>
       </div>
 

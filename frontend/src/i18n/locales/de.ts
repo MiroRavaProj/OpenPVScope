@@ -137,7 +137,7 @@ export const de: Dict = {
       bothTitle: "RGB + Thermal (empfohlen)",
       bothHint: "Volle Pipeline: Orthofotos, Ausrichtung, Detektion und Paarung.",
       thermalTitle: "Nur Thermal",
-      thermalHint: "Thermal jetzt verarbeiten. RGB-Orthofoto ist vor der Ausrichtung weiterhin noetig.",
+      thermalHint: "Thermal-Orthofoto → Ausrichtung ueberspringen → nur Thermal-Detektion und Segmentierung.",
       q2: "Hast du bereits Orthofoto-GeoTIFFs?",
       processTitle: "Nein — ODX aus Rohfotos",
       processHint: "Drohnenframes hochladen und Orthofotos mit ODX erzeugen.",
@@ -147,8 +147,8 @@ export const de: Dict = {
       back: "Zurueck",
       continue: "Fortfahren",
       changeSetup: "Setup aendern…",
-      rgbStillNeeded:
-        "Nur-Thermal-Setup: RGB-Orthofoto ist vor Ausrichtung und Detektion weiterhin noetig.",
+      thermalOnlyNote:
+        "Nur Thermal: Ausrichtung wird uebersprungen. Nach dem Thermal-Orthofoto weiter mit Thermal-Detektion und Segmentierung.",
     },
     odxOpts: {
       title: "ODX-Optionen",
@@ -232,6 +232,7 @@ export const de: Dict = {
     generateGrid: "Raster erzeugen ({{modality}})",
     generateGridTitle:
       "Erzeugt ein {{rows}}×{{cols}}-Startraster innerhalb der {{modality}}-AOI. Der Deskew-Winkel stammt aus der AOI; Templates werden aus diesen Zellen ausgeschnitten.",
+    generateGridNeedAoi: "Zeichne zuerst den 4-Ecken-Rahmen (AOI), dann erzeuge das Raster.",
     copyRgbThermal: "RGB → Thermal kopieren",
     copyRgbThermalTitle:
       "Kopiert die RGB-AOI + das Raster in die Thermal-Modalität (gleiche Ecken/Zellen in WGS84). Passe anschließend bei Bedarf die Thermal-Ecken an.",

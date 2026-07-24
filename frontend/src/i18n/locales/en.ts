@@ -56,6 +56,8 @@ export const en: Dict = {
     historyForwardWithLabel: "Forward: {{label}}",
     orthoAlignmentMap: "Ortho alignment / map",
     gateNeedOrthos: "Import or build orthophotos and complete alignment before using the plant map.",
+    gateNeedThermalOrtho: "Import or build a thermal orthophoto before detection.",
+    alignmentSkippedThermal: "Alignment is skipped for thermal-only projects. Continue with thermal detection.",
     exportTitle: "Export .opsz",
     exportBlurb:
       "Full includes orthophotos and data. Light skips rebuildable folders ({{prefixes}}). Undo history is never exported.",
@@ -137,7 +139,8 @@ export const en: Dict = {
       bothTitle: "RGB + thermal (recommended)",
       bothHint: "Full pipeline: orthophotos, alignment, panel detection and pairing.",
       thermalTitle: "Thermal only",
-      thermalHint: "Process thermal now. You still need an RGB orthophoto before alignment.",
+      thermalHint:
+        "Thermal orthophoto → skip alignment → detect and segment thermal panels only (no RGB pairing).",
       q2: "Do you already have orthophoto GeoTIFFs?",
       processTitle: "No — run ODX from raw photos",
       processHint: "Upload drone frames and build orthophotos with ODX.",
@@ -147,8 +150,8 @@ export const en: Dict = {
       back: "Back",
       continue: "Continue",
       changeSetup: "Change setup…",
-      rgbStillNeeded:
-        "Thermal-only setup: RGB orthophoto is still required before ortho alignment and detection.",
+      thermalOnlyNote:
+        "Thermal-only: alignment is skipped. After the thermal ortho is ready, continue with thermal detection and segmentation.",
     },
     odxOpts: {
       title: "ODX options",
@@ -209,6 +212,9 @@ export const en: Dict = {
     expand: "Expand detection",
     minimize: "Minimize detection",
     hint: "Full-ortho deskew + multi-template match. AOI/grid set angle and templates only. Confirm runs RGB + Thermal.",
+    hintThermalOnly:
+      "Thermal-only: draw AOI and generate a grid on the thermal ortho, then run thermal detection.",
+    thermalOnlyBadge: "Modality: thermal only",
     modalityAria: "Edit modality",
     modalityGroupTitle:
       "Which modality’s AOI/grid you are editing. Switching also toggles orthomosaic opacity (RGB↔Thermal).",
@@ -232,6 +238,7 @@ export const en: Dict = {
     generateGrid: "Generate grid ({{modality}})",
     generateGridTitle:
       "Build a {{rows}}×{{cols}} seed grid inside the {{modality}} AOI. Deskew angle comes from the AOI; templates are cut from these cells.",
+    generateGridNeedAoi: "Draw the 4-corner frame (AOI) first, then generate the grid.",
     copyRgbThermal: "Copy RGB → Thermal",
     copyRgbThermalTitle:
       "Copy the RGB AOI + grid into the thermal modality (same corners/cells in WGS84). Then tweak thermal corners if needed.",
@@ -265,11 +272,15 @@ export const en: Dict = {
     mapFilterThermalTitle:
       "Map-only filter for orange (thermal) boxes — does not re-run detection. Higher = hide weaker thermal boxes; lower = show more (thermal scores often lower). Default 0.7.",
     run: "Confirm & detect (RGB + Thermal)",
+    runThermalOnly: "Confirm & detect (Thermal)",
     running: "Detecting RGB + Thermal…",
     runTitleReady:
       "Run full-ortho deskew + multi-template matching on both RGB and thermal. Progress appears in the activity console (Verbose for per-template detail).",
+    runTitleReadyThermal:
+      "Run full-ortho deskew + multi-template matching on the thermal orthophoto.",
     runTitleBlocked:
       "Confirm both RGB and thermal grids first (generate RGB grid, then Copy RGB → Thermal or generate thermal separately).",
+    runTitleBlockedThermal: "Generate a thermal AOI and grid first.",
     countsTitle: "Panel counts after the last detection run (all saved boxes, before map filter).",
     legendRgb: "RGB (blue): {{count}}",
     legendThermal: "Thermal (orange): {{count}}",
@@ -291,13 +302,16 @@ export const en: Dict = {
     minIouTitle:
       "Minimum center IoU to accept an RGB↔thermal pair. Higher = stricter matches only; lower = keep weaker / more distant pairs.",
     run: "Run pairing & extract",
+    runThermal: "Extract thermal panels",
     extracting: "Extracting…",
     runTitle: "Pair RGB and thermal detections, then extract deskewed crops and thermal stats.",
+    runTitleThermal: "Extract deskewed thermal crops and stats from thermal detections (no RGB pairing).",
     saveLabels: "Save Labels",
     saveLabelsTitle:
       "Write green/red threshold labels from the current histogram range. Enable thermal coloring and pick a labelable indicator first.",
     labelsSaved: "Saved {{labeled}} labels (0:{{label0}} mid:{{labelMid}} 1:{{label1}})",
     pairsHint: "Pairs: {{count}}. Click a map panel to inspect on the right.",
+    panelsHint: "Thermal panels: {{count}}. Click a map panel to inspect on the right.",
     histTitle: "Temperature distribution",
     expandHist: "Expand histogram",
     minimizeHist: "Minimize histogram",

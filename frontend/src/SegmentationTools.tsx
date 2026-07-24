@@ -34,8 +34,16 @@ export function SegmentationTools(props: {
   onError: (msg: string) => void;
   colorState: SegColorState;
   onColorStateChange: (patch: Partial<SegColorState>) => void;
+  thermalOnly?: boolean;
 }) {
-  const { onRefreshMap, onProjectRefresh, onError, colorState, onColorStateChange } = props;
+  const {
+    onRefreshMap,
+    onProjectRefresh,
+    onError,
+    colorState,
+    onColorStateChange,
+    thermalOnly = false,
+  } = props;
   const t = useT();
   const [status, setStatus] = useState("");
   const [count, setCount] = useState(0);
@@ -182,7 +190,7 @@ export function SegmentationTools(props: {
         {!controlsMin && (
           <div className="seg-dock-section-body">
             <p className="muted tool-hint">{status}</p>
-            <div className="seg-dock-row seg-dock-row-2">
+            <div className={`seg-dock-row${thermalOnly ? "" : " seg-dock-row-2"}`}>
               <label
                 className="tool-field"
                 title={t("segmentation.marginTitle")}
@@ -198,6 +206,7 @@ export function SegmentationTools(props: {
                   onChange={(e) => setMargin(Number(e.target.value))}
                 />
               </label>
+              {!thermalOnly && (
               <label
                 className="tool-field"
                 title={t("segmentation.minIouTitle")}
@@ -213,16 +222,21 @@ export function SegmentationTools(props: {
                   onChange={(e) => setMinIou(Number(e.target.value))}
                 />
               </label>
+              )}
             </div>
             <div className="seg-dock-actions">
               <button
                 type="button"
                 className="primary"
                 disabled={busy || running}
-                title={t("segmentation.runTitle")}
+                title={thermalOnly ? t("segmentation.runTitleThermal") : t("segmentation.runTitle")}
                 onClick={run}
               >
-                {running ? t("segmentation.extracting") : t("segmentation.run")}
+                {running
+                  ? t("segmentation.extracting")
+                  : thermalOnly
+                    ? t("segmentation.runThermal")
+                    : t("segmentation.run")}
               </button>
               <button
                 type="button"
@@ -235,7 +249,9 @@ export function SegmentationTools(props: {
             </div>
             {labelMsg && <p className="muted tool-hint">{labelMsg}</p>}
             <p className="muted tool-hint">
-              {t("segmentation.pairsHint", { count })}
+              {thermalOnly
+                ? t("segmentation.panelsHint", { count })
+                : t("segmentation.pairsHint", { count })}
             </p>
           </div>
         )}

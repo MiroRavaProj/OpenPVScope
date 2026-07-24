@@ -137,7 +137,7 @@ export const es: Dict = {
       bothTitle: "RGB + térmico (recomendado)",
       bothHint: "Pipeline completa: ortofotos, alineación, detección y emparejado.",
       thermalTitle: "Solo térmico",
-      thermalHint: "Procesa el térmico ahora. Aún necesitas una ortofoto RGB antes de la alineación.",
+      thermalHint: "Procesa el térmico ahora. Tras la ortofoto térmica se omite la alineación y sigue detección/segmentación térmica.",
       q2: "¿Ya tienes ortofotos GeoTIFF?",
       processTitle: "No — ejecutar ODX desde fotos",
       processHint: "Sube fotogramas y genera ortofotos con ODX.",
@@ -147,8 +147,8 @@ export const es: Dict = {
       back: "Atrás",
       continue: "Continuar",
       changeSetup: "Cambiar configuración…",
-      rgbStillNeeded:
-        "Configuración solo térmico: aún se necesita ortofoto RGB antes de alineación y detección.",
+      thermalOnlyNote:
+        "Solo térmico: se omite la alineación. Con la ortofoto térmica lista, continúa con detección y segmentación térmicas.",
     },
     odxOpts: {
       title: "Opciones ODX",
@@ -232,6 +232,7 @@ export const es: Dict = {
     generateGrid: "Generar cuadrícula ({{modality}})",
     generateGridTitle:
       "Genera una cuadrícula semilla de {{rows}}×{{cols}} dentro del AOI {{modality}}. El ángulo de deskew proviene del AOI; las plantillas se recortan de estas celdas.",
+    generateGridNeedAoi: "Dibuja primero el marco de 4 esquinas (AOI) y luego genera la cuadrícula.",
     copyRgbThermal: "Copiar RGB → Térmico",
     copyRgbThermalTitle:
       "Copia el AOI + cuadrícula RGB a la modalidad térmica (mismas esquinas/celdas en WGS84). Luego ajusta las esquinas térmicas si es necesario.",

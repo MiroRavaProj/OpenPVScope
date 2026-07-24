@@ -23,9 +23,10 @@ from rasterio.windows import Window
 from openpvscope.detection.pipeline import load_geojson
 from openpvscope.geo.crs import feature_collection, polygon_feature, transformer_to_wgs84
 from openpvscope.io_atomic import atomic_write_json
-from openpvscope.project.paths import ortho_rgb, ortho_thermal_aligned
+from openpvscope.project.paths import ortho_rgb, ortho_thermal, ortho_thermal_aligned
 from openpvscope.segmentation.pairing import (
     DEFAULT_MIN_IOU,
+    pair_panels_self,
     pair_rgb_thermal_panels,
 )
 
@@ -246,36 +247,51 @@ def run_segmentation(
     progress: ProgressCb | None = None,
 ) -> dict[str, Any]:
     root = Path(root)
-    rgb_panels = load_geojson(root, "panels", modality="rgb")
+    from openpvscope.photogrammetry.setup import load_setup
+
+    thermal_only = load_setup(root).get("modalities") == "thermal_only"
+    mode = "thermal_only" if thermal_only else "pair"
+
     th_panels = load_geojson(root, "panels", modality="thermal")
-    if not rgb_panels or not rgb_panels.get("features"):
-        raise FileNotFoundError("No RGB panels — run RGB detection first")
     if not th_panels or not th_panels.get("features"):
         raise FileNotFoundError("No thermal panels — run thermal detection first")
 
-    rgb_path = ortho_rgb(root)
     th_path = ortho_thermal_aligned(root)
-    if not rgb_path.is_file():
-        raise FileNotFoundError("RGB orthophoto missing")
     if not th_path.is_file():
-        raise FileNotFoundError("Aligned thermal orthophoto missing — complete ortho alignment first")
+        th_path = ortho_thermal(root)
+    if not th_path.is_file():
+        raise FileNotFoundError("Thermal orthophoto missing")
 
     def prog(p: float | None, msg: str) -> None:
         if progress:
             progress(p, msg)
 
-    prog(5, f"Pairing RGB↔thermal panels [{SEGMENTATION_REV}]")
-    pairs = pair_rgb_thermal_panels(
-        rgb_panels,
-        th_panels,
-        search_radius_m=search_radius_m,
-        min_iou=min_iou,
-    )
-    if not pairs:
-        raise RuntimeError(
-            f"No RGB↔thermal pairs (min IoU={min_iou}, "
-            f"search_radius_m={search_radius_m or 'auto'}) — check both detections overlap"
+    if thermal_only:
+        prog(5, f"Preparing thermal panels [{SEGMENTATION_REV}]")
+        pairs = pair_panels_self(th_panels)
+        if not pairs:
+            raise RuntimeError("No thermal panels to extract")
+    else:
+        rgb_panels = load_geojson(root, "panels", modality="rgb")
+        if not rgb_panels or not rgb_panels.get("features"):
+            raise FileNotFoundError("No RGB panels — run RGB detection first")
+
+        rgb_path = ortho_rgb(root)
+        if not rgb_path.is_file():
+            raise FileNotFoundError("RGB orthophoto missing")
+
+        prog(5, f"Pairing RGB↔thermal panels [{SEGMENTATION_REV}]")
+        pairs = pair_rgb_thermal_panels(
+            rgb_panels,
+            th_panels,
+            search_radius_m=search_radius_m,
+            min_iou=min_iou,
         )
+        if not pairs:
+            raise RuntimeError(
+                f"No RGB↔thermal pairs (min IoU={min_iou}, "
+                f"search_radius_m={search_radius_m or 'auto'}) — check both detections overlap"
+            )
 
     seg = segmentation_root(root)
     panels_dir = seg / "panels"
@@ -284,125 +300,218 @@ def run_segmentation(
             if child.is_dir():
                 shutil.rmtree(child, ignore_errors=True)
 
-    prog(12, f"Extracting {len(pairs)} paired crops (deskewed, full-res stats)")
+    extract_label = "thermal" if thermal_only else "paired"
+    prog(12, f"Extracting {len(pairs)} {extract_label} crops (deskewed, full-res stats)")
     out_pairs: list[dict] = []
     pair_features = []
 
-    with rasterio.open(rgb_path) as rgb_ds, rasterio.open(th_path) as th_ds:
-        from_wgs_rgb = None
-        if transformer_to_wgs84(rgb_ds.crs) is not None:
-            from_wgs_rgb = Transformer.from_crs("EPSG:4326", rgb_ds.crs, always_xy=True)
-        from_wgs_th = None
-        if transformer_to_wgs84(th_ds.crs) is not None:
-            from_wgs_th = Transformer.from_crs("EPSG:4326", th_ds.crs, always_xy=True)
-        else:
-            from_wgs_th = from_wgs_rgb
+    if thermal_only:
+        with rasterio.open(th_path) as th_ds:
+            from_wgs_th = None
+            if transformer_to_wgs84(th_ds.crs) is not None:
+                from_wgs_th = Transformer.from_crs("EPSG:4326", th_ds.crs, always_xy=True)
 
-        n = max(1, len(pairs))
-        for i, pair in enumerate(pairs):
-            pid = pair["id"]
-            rgb_ring = pair["rgb_ring"]
-            th_ring = pair["thermal_ring"]
+            n = max(1, len(pairs))
+            for i, pair in enumerate(pairs):
+                pid = pair["id"]
+                th_ring = pair["thermal_ring"]
 
-            rgb_preview = crop_oriented_panel(
-                rgb_ds, rgb_ring, from_wgs_rgb, margin_factor=margin_factor, is_rgb=True
-            )
-            th_preview_raw = crop_oriented_panel(
-                th_ds, th_ring, from_wgs_th, margin_factor=margin_factor, is_rgb=False
-            )
-            # Exact thermal panel (no margin) for stats + archived raw
-            th_exact = crop_oriented_panel(
-                th_ds, th_ring, from_wgs_th, margin_factor=0.0, is_rgb=False
-            )
-            stats = _thermal_stats(th_exact)
-
-            rgb_prev_u8 = _downscale_u8(rgb_preview, PREVIEW_MAX)
-            th_prev_u8 = _downscale_u8(_stretch_u8(th_preview_raw), PREVIEW_MAX)
-            if th_prev_u8.ndim == 2:
-                th_prev_u8 = cv2.cvtColor(th_prev_u8, cv2.COLOR_GRAY2RGB)
-
-            dest = panels_dir / pid
-            dest.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(rgb_prev_u8).save(dest / "rgb.png")
-            Image.fromarray(th_prev_u8).save(dest / "thermal.png")
-            with rasterio.open(
-                dest / "thermal.tif",
-                "w",
-                driver="GTiff",
-                height=th_exact.shape[0],
-                width=th_exact.shape[1],
-                count=1,
-                dtype="float32",
-                compress="lzw",
-            ) as dst:
-                dst.write(th_exact, 1)
-                dst.update_tags(
-                    min_temperature=stats.get("min_temperature"),
-                    max_temperature=stats.get("max_temperature"),
-                    mean_temperature=stats.get("mean_temperature"),
-                    median_temperature=stats.get("median_temperature"),
-                    std_temperature=stats.get("std_temperature"),
-                    var_temperature=stats.get("var_temperature"),
-                    temperature_unit=stats.get("temperature_unit", "Celsius"),
+                th_preview_raw = crop_oriented_panel(
+                    th_ds, th_ring, from_wgs_th, margin_factor=margin_factor, is_rgb=False
                 )
+                th_exact = crop_oriented_panel(
+                    th_ds, th_ring, from_wgs_th, margin_factor=0.0, is_rgb=False
+                )
+                stats = _thermal_stats(th_exact)
 
-            meta = {
-                "id": pid,
-                "rgb_id": pair.get("rgb_id"),
-                "thermal_id": pair.get("thermal_id"),
-                "confidence": pair.get("confidence"),
-                "thermal_confidence": pair.get("thermal_confidence"),
-                "iou": pair.get("iou"),
-                "distance_m": pair.get("distance_m"),
-                "margin_factor": margin_factor,
-                "min_iou": min_iou,
-                "segmentation_rev": SEGMENTATION_REV,
-                **stats,
-            }
-            atomic_write_json(dest / "meta.json", meta)
+                th_prev_u8 = _downscale_u8(_stretch_u8(th_preview_raw), PREVIEW_MAX)
+                if th_prev_u8.ndim == 2:
+                    th_prev_u8 = cv2.cvtColor(th_prev_u8, cv2.COLOR_GRAY2RGB)
 
-            ring = pair.get("ring") or rgb_ring
-            out_pairs.append(
-                {
-                    **pair,
-                    "stats": stats,
-                    "paths": {
-                        "rgb": f"panels/{pid}/rgb.png",
-                        "thermal": f"panels/{pid}/thermal.png",
-                    },
+                dest = panels_dir / pid
+                dest.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(th_prev_u8).save(dest / "thermal.png")
+                with rasterio.open(
+                    dest / "thermal.tif",
+                    "w",
+                    driver="GTiff",
+                    height=th_exact.shape[0],
+                    width=th_exact.shape[1],
+                    count=1,
+                    dtype="float32",
+                    compress="lzw",
+                ) as dst:
+                    dst.write(th_exact, 1)
+                    dst.update_tags(
+                        min_temperature=stats.get("min_temperature"),
+                        max_temperature=stats.get("max_temperature"),
+                        mean_temperature=stats.get("mean_temperature"),
+                        median_temperature=stats.get("median_temperature"),
+                        std_temperature=stats.get("std_temperature"),
+                        var_temperature=stats.get("var_temperature"),
+                        temperature_unit=stats.get("temperature_unit", "Celsius"),
+                    )
+
+                meta = {
+                    "id": pid,
+                    "thermal_id": pair.get("thermal_id"),
+                    "confidence": pair.get("confidence"),
+                    "margin_factor": margin_factor,
+                    "segmentation_rev": SEGMENTATION_REV,
+                    "mode": "thermal_only",
+                    **stats,
                 }
-            )
-            pair_features.append(
-                polygon_feature(
-                    [[float(p[0]), float(p[1])] for p in ring[:4]],
-                    {
-                        "kind": "pair",
-                        "id": pid,
-                        "rgb_id": pair.get("rgb_id"),
-                        "thermal_id": pair.get("thermal_id"),
-                        "min_temperature": stats.get("min_temperature"),
-                        "max_temperature": stats.get("max_temperature"),
-                        "mean_temperature": stats.get("mean_temperature"),
-                        "median_temperature": stats.get("median_temperature"),
-                        "std_temperature": stats.get("std_temperature"),
-                        "var_temperature": stats.get("var_temperature"),
-                        "valid_pixels": stats.get("valid_pixels"),
-                        "confidence": pair.get("confidence"),
-                        "thermal_confidence": pair.get("thermal_confidence"),
-                        "iou": pair.get("iou"),
-                        "distance_m": pair.get("distance_m"),
-                    },
-                    fid=pid,
-                )
-            )
-            if i % 5 == 0 or i == n - 1:
-                prog(12 + 85 * (i + 1) / n, f"Cropped {i + 1}/{n} [{SEGMENTATION_REV}]")
+                atomic_write_json(dest / "meta.json", meta)
 
+                ring = pair.get("ring") or th_ring
+                out_pairs.append(
+                    {
+                        **pair,
+                        "stats": stats,
+                        "paths": {
+                            "thermal": f"panels/{pid}/thermal.png",
+                        },
+                    }
+                )
+                pair_features.append(
+                    polygon_feature(
+                        [[float(p[0]), float(p[1])] for p in ring[:4]],
+                        {
+                            "kind": "thermal",
+                            "id": pid,
+                            "thermal_id": pair.get("thermal_id"),
+                            "min_temperature": stats.get("min_temperature"),
+                            "max_temperature": stats.get("max_temperature"),
+                            "mean_temperature": stats.get("mean_temperature"),
+                            "median_temperature": stats.get("median_temperature"),
+                            "std_temperature": stats.get("std_temperature"),
+                            "var_temperature": stats.get("var_temperature"),
+                            "valid_pixels": stats.get("valid_pixels"),
+                            "confidence": pair.get("confidence"),
+                        },
+                        fid=pid,
+                    )
+                )
+                if i % 5 == 0 or i == n - 1:
+                    prog(12 + 85 * (i + 1) / n, f"Cropped {i + 1}/{n} [{SEGMENTATION_REV}]")
+    else:
+        rgb_path = ortho_rgb(root)
+        with rasterio.open(rgb_path) as rgb_ds, rasterio.open(th_path) as th_ds:
+            from_wgs_rgb = None
+            if transformer_to_wgs84(rgb_ds.crs) is not None:
+                from_wgs_rgb = Transformer.from_crs("EPSG:4326", rgb_ds.crs, always_xy=True)
+            from_wgs_th = None
+            if transformer_to_wgs84(th_ds.crs) is not None:
+                from_wgs_th = Transformer.from_crs("EPSG:4326", th_ds.crs, always_xy=True)
+            else:
+                from_wgs_th = from_wgs_rgb
+
+            n = max(1, len(pairs))
+            for i, pair in enumerate(pairs):
+                pid = pair["id"]
+                rgb_ring = pair["rgb_ring"]
+                th_ring = pair["thermal_ring"]
+
+                rgb_preview = crop_oriented_panel(
+                    rgb_ds, rgb_ring, from_wgs_rgb, margin_factor=margin_factor, is_rgb=True
+                )
+                th_preview_raw = crop_oriented_panel(
+                    th_ds, th_ring, from_wgs_th, margin_factor=margin_factor, is_rgb=False
+                )
+                th_exact = crop_oriented_panel(
+                    th_ds, th_ring, from_wgs_th, margin_factor=0.0, is_rgb=False
+                )
+                stats = _thermal_stats(th_exact)
+
+                rgb_prev_u8 = _downscale_u8(rgb_preview, PREVIEW_MAX)
+                th_prev_u8 = _downscale_u8(_stretch_u8(th_preview_raw), PREVIEW_MAX)
+                if th_prev_u8.ndim == 2:
+                    th_prev_u8 = cv2.cvtColor(th_prev_u8, cv2.COLOR_GRAY2RGB)
+
+                dest = panels_dir / pid
+                dest.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(rgb_prev_u8).save(dest / "rgb.png")
+                Image.fromarray(th_prev_u8).save(dest / "thermal.png")
+                with rasterio.open(
+                    dest / "thermal.tif",
+                    "w",
+                    driver="GTiff",
+                    height=th_exact.shape[0],
+                    width=th_exact.shape[1],
+                    count=1,
+                    dtype="float32",
+                    compress="lzw",
+                ) as dst:
+                    dst.write(th_exact, 1)
+                    dst.update_tags(
+                        min_temperature=stats.get("min_temperature"),
+                        max_temperature=stats.get("max_temperature"),
+                        mean_temperature=stats.get("mean_temperature"),
+                        median_temperature=stats.get("median_temperature"),
+                        std_temperature=stats.get("std_temperature"),
+                        var_temperature=stats.get("var_temperature"),
+                        temperature_unit=stats.get("temperature_unit", "Celsius"),
+                    )
+
+                meta = {
+                    "id": pid,
+                    "rgb_id": pair.get("rgb_id"),
+                    "thermal_id": pair.get("thermal_id"),
+                    "confidence": pair.get("confidence"),
+                    "thermal_confidence": pair.get("thermal_confidence"),
+                    "iou": pair.get("iou"),
+                    "distance_m": pair.get("distance_m"),
+                    "margin_factor": margin_factor,
+                    "min_iou": min_iou,
+                    "segmentation_rev": SEGMENTATION_REV,
+                    **stats,
+                }
+                atomic_write_json(dest / "meta.json", meta)
+
+                ring = pair.get("ring") or rgb_ring
+                out_pairs.append(
+                    {
+                        **pair,
+                        "stats": stats,
+                        "paths": {
+                            "rgb": f"panels/{pid}/rgb.png",
+                            "thermal": f"panels/{pid}/thermal.png",
+                        },
+                    }
+                )
+                pair_features.append(
+                    polygon_feature(
+                        [[float(p[0]), float(p[1])] for p in ring[:4]],
+                        {
+                            "kind": "pair",
+                            "id": pid,
+                            "rgb_id": pair.get("rgb_id"),
+                            "thermal_id": pair.get("thermal_id"),
+                            "min_temperature": stats.get("min_temperature"),
+                            "max_temperature": stats.get("max_temperature"),
+                            "mean_temperature": stats.get("mean_temperature"),
+                            "median_temperature": stats.get("median_temperature"),
+                            "std_temperature": stats.get("std_temperature"),
+                            "var_temperature": stats.get("var_temperature"),
+                            "valid_pixels": stats.get("valid_pixels"),
+                            "confidence": pair.get("confidence"),
+                            "thermal_confidence": pair.get("thermal_confidence"),
+                            "iou": pair.get("iou"),
+                            "distance_m": pair.get("distance_m"),
+                        },
+                        fid=pid,
+                    )
+                )
+                if i % 5 == 0 or i == n - 1:
+                    prog(12 + 85 * (i + 1) / n, f"Cropped {i + 1}/{n} [{SEGMENTATION_REV}]")
+
+    done_label = "thermal panels" if thermal_only else "pairs"
     atomic_write_json(
         seg / "pairs.json",
         {
             "pairs": out_pairs,
             "count": len(out_pairs),
+            "mode": mode,
             "margin_factor": margin_factor,
             "min_iou": min_iou,
             "search_radius_m": search_radius_m,
@@ -410,9 +519,10 @@ def run_segmentation(
         },
     )
     atomic_write_json(seg / "pairs.geojson", feature_collection(pair_features, name="pairs"))
-    prog(100, f"Segmentation complete — {len(out_pairs)} pairs [{SEGMENTATION_REV}]")
+    prog(100, f"Segmentation complete — {len(out_pairs)} {done_label} [{SEGMENTATION_REV}]")
     return {
         "count": len(out_pairs),
+        "mode": mode,
         "segmentation_rev": SEGMENTATION_REV,
         "margin_factor": margin_factor,
         "min_iou": min_iou,
@@ -424,22 +534,37 @@ def segmentation_status(project_root: Path) -> dict[str, Any]:
     pairs_path = segmentation_root(root) / "pairs.json"
     count = 0
     rev = None
+    mode = None
     if pairs_path.is_file():
         try:
             data = json.loads(pairs_path.read_text(encoding="utf-8"))
             count = int(data.get("count") or 0)
             rev = data.get("segmentation_rev")
+            mode = data.get("mode")
         except Exception:
             count = 0
-    msg = f"{count} panel pairs" if count else "Run segmentation after RGB + thermal detection"
-    if rev and count:
-        msg = f"{count} panel pairs [{rev}]"
+    thermal_only = False
+    try:
+        from openpvscope.photogrammetry.setup import load_setup
+
+        thermal_only = load_setup(root).get("modalities") == "thermal_only"
+    except Exception:
+        thermal_only = mode == "thermal_only"
+    if thermal_only or mode == "thermal_only":
+        msg = "Run thermal segmentation after detection" if not count else f"{count} thermal panels"
+        if rev and count:
+            msg = f"{count} thermal panels [{rev}]"
+    else:
+        msg = f"{count} panel pairs" if count else "Run segmentation after RGB + thermal detection"
+        if rev and count:
+            msg = f"{count} panel pairs [{rev}]"
     return {
         "ready": count > 0,
         "message": msg,
         "has_pairs": count > 0,
         "pair_count": count,
         "segmentation_rev": rev,
+        "mode": mode or ("thermal_only" if thermal_only else "pair"),
     }
 
 

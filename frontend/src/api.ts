@@ -31,6 +31,7 @@ export interface ProjectPayload {
   opsx_path: string | null;
   orthos_ready: boolean;
   photo_setup?: PhotoSetup | null;
+  alignment_required?: boolean;
   rgb_ortho_missing?: boolean;
   thermal_ortho_ready?: boolean;
   layers: Array<Record<string, unknown>>;
@@ -480,6 +481,7 @@ export const api = {
     thermal_temp_cap?: number | null;
     advanced_validation?: boolean;
     fine_tuning_confidence?: number;
+    modality?: "rgb" | "thermal" | "both";
   }) =>
     req<{ started: boolean }>("/api/detection/run", {
       method: "POST",
@@ -490,7 +492,7 @@ export const api = {
         nms_iou: opts.nms_iou,
         num_templates: opts.num_templates ?? 0,
         thermal_temp_cap: opts.thermal_temp_cap ?? 45,
-        modality: "both",
+        modality: opts.modality ?? "both",
         advanced_validation: opts.advanced_validation ?? true,
         fine_tuning_confidence: opts.fine_tuning_confidence ?? 0.65,
       }),

@@ -10,6 +10,7 @@ export function PanelInspector(props: {
   onClose: () => void;
   /** Inside the right seg-dock (no absolute positioning). */
   embedded?: boolean;
+  thermalOnly?: boolean;
 }) {
   const t = useT();
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
@@ -80,6 +81,7 @@ export function PanelInspector(props: {
             <div className="muted">{t("inspector.thermal")}</div>
             <ThermalImageViewer panelId={props.panelId} />
           </div>
+          {!props.thermalOnly && (
           <div className="inspector-section">
             <div className="muted">{t("inspector.rgb")}</div>
             <img
@@ -88,6 +90,7 @@ export function PanelInspector(props: {
               alt={t("inspector.rgbCropAlt")}
             />
           </div>
+          )}
           {meta && (
             <dl className="inspector-stats">
               <div>
@@ -110,12 +113,14 @@ export function PanelInspector(props: {
                 <dt>{t("inspector.variance")}</dt>
                 <dd>{fmt(meta.var_temperature)}</dd>
               </div>
+              {!props.thermalOnly && (
               <div>
                 <dt>{t("inspector.matchIouM")}</dt>
                 <dd>
                   {fmt(meta.iou)} / {fmt(meta.distance_m)}
                 </dd>
               </div>
+              )}
             </dl>
           )}
         </>

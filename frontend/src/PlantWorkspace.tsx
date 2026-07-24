@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PipelineStep, ProjectPayload } from "./api";
 import { DetectModality, DetectionTools } from "./DetectionTools";
 import { LayerDock, Basemap } from "./LayerDock";
@@ -18,17 +18,20 @@ export function PlantWorkspace(props: {
   onProjectChange: (p: ProjectPayload) => void;
   onError: (msg: string) => void;
   refreshProject: () => Promise<void>;
+  thermalOnly?: boolean;
 }) {
   const t = useT();
+  const thermalOnly = Boolean(props.thermalOnly);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [toolsEpoch, setToolsEpoch] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [drawEnabled, setDrawEnabled] = useState(false);
   const [editCorners, setEditCorners] = useState(false);
-  const [modality, setModality] = useState<DetectModality>("rgb");
+  const [modality, setModality] = useState<DetectModality>(thermalOnly ? "thermal" : "rgb");
   const [displayConfidenceRgb, setDisplayConfidenceRgb] = useState(DEFAULT_DISPLAY_RGB);
   const [displayConfidenceThermal, setDisplayConfidenceThermal] = useState(DEFAULT_DISPLAY_THERMAL);
-  const [rgbOpacity, setRgbOpacity] = useState(1);
-  const [thermalOpacity, setThermalOpacity] = useState(0);
+  const [rgbOpacity, setRgbOpacity] = useState(thermalOnly ? 0 : 1);
+  const [thermalOpacity, setThermalOpacity] = useState(thermalOnly ? 1 : 0);
   const [basemap, setBasemap] = useState<Basemap>("satellite");
   const fitBoundsRef = useRef<(() => void) | null>(null);
   const [inspMin, setInspMin] = useMinimized("seg-inspector", false);
@@ -39,17 +42,28 @@ export function PlantWorkspace(props: {
     pairsFc: null,
   });
 
+  // Lock modality/opacity for thermal-only projects
+  useEffect(() => {
+    if (!thermalOnly) return;
+    setModality("thermal");
+    setRgbOpacity(0);
+    setThermalOpacity(1);
+  }, [thermalOnly]);
+
   const bumpMap = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const bumpTools = useCallback(() => setToolsEpoch((k) => k + 1), []);
   const onProjectRefresh = useCallback(() => {
     void props.refreshProject();
   }, [props.refreshProject]);
   const onAoiSaved = useCallback(() => {
     bumpMap();
+    bumpTools();
     setDrawEnabled(false);
-  }, [bumpMap]);
+  }, [bumpMap, bumpTools]);
   const onCornersEdited = useCallback(() => {
     bumpMap();
-  }, [bumpMap]);
+    bumpTools();
+  }, [bumpMap, bumpTools]);
 
   const onColorStateChange = useCallback((patch: Partial<SegColorState>) => {
     setSegColor((prev) => ({ ...prev, ...patch }));
@@ -71,8 +85,16 @@ export function PlantWorkspace(props: {
         drawEnabled={drawEnabled && props.step === "detection"}
         editCorners={editCorners && props.step === "detection"}
         modality={modality}
-        showPanels={props.step === "detection" ? "both" : "rgb"}
-        displayConfidenceRgb={props.step === "detection" ? displayConfidenceRgb : 0}
+        showPanels={
+          props.step === "detection"
+            ? thermalOnly
+              ? "thermal"
+              : "both"
+            : thermalOnly
+              ? "thermal"
+              : "rgb"
+        }
+        displayConfidenceRgb={props.step === "detection" && !thermalOnly ? displayConfidenceRgb : 0}
         displayConfidenceThermal={props.step === "detection" ? displayConfidenceThermal : 0}
         refreshKey={refreshKey}
         selectedId={selectedId}
@@ -115,6 +137,8 @@ export function PlantWorkspace(props: {
             onRefreshMap={bumpMap}
             onProjectRefresh={onProjectRefresh}
             onError={props.onError}
+            thermalOnly={thermalOnly}
+            statusEpoch={toolsEpoch}
           />
         )}
         {props.step === "segmentation" && (
@@ -124,6 +148,7 @@ export function PlantWorkspace(props: {
             onError={props.onError}
             colorState={segColor}
             onColorStateChange={onColorStateChange}
+            thermalOnly={thermalOnly}
           />
         )}
         <LayerDock
@@ -134,6 +159,7 @@ export function PlantWorkspace(props: {
           thermalOpacity={thermalOpacity}
           onThermalOpacityChange={setThermalOpacity}
           onFitBounds={() => fitBoundsRef.current?.()}
+          hideRgb={thermalOnly}
         />
       </aside>
 
@@ -143,6 +169,7 @@ export function PlantWorkspace(props: {
           minimized={inspMin}
           onToggleMinimize={() => setInspMin(!inspMin)}
           onClose={() => setSelectedId(null)}
+          thermalOnly={thermalOnly}
         />
       )}
     </div>

@@ -137,7 +137,7 @@ export const fr: Dict = {
       bothTitle: "RGB + thermique (recommandé)",
       bothHint: "Pipeline complète : orthophotos, alignement, détection et appariement.",
       thermalTitle: "Thermique uniquement",
-      thermalHint: "Traiter le thermique maintenant. Une orthophoto RGB reste nécessaire avant l’alignement.",
+      thermalHint: "Orthophoto thermique → alignement ignoré → détection et segmentation thermiques uniquement.",
       q2: "Avez-vous déjà des orthophotos GeoTIFF ?",
       processTitle: "Non — lancer ODX depuis les photos",
       processHint: "Importer les frames et produire les orthophotos avec ODX.",
@@ -147,8 +147,8 @@ export const fr: Dict = {
       back: "Retour",
       continue: "Continuer",
       changeSetup: "Changer la configuration…",
-      rgbStillNeeded:
-        "Config thermique seule : une orthophoto RGB est encore requise avant alignement et détection.",
+      thermalOnlyNote:
+        "Thermique seul : l’alignement est ignoré. Avec l’orthophoto thermique prête, continuez détection et segmentation thermiques.",
     },
     odxOpts: {
       title: "Options ODX",
@@ -232,6 +232,7 @@ export const fr: Dict = {
     generateGrid: "Générer la grille ({{modality}})",
     generateGridTitle:
       "Crée une grille de départ {{rows}}×{{cols}} à l'intérieur de l'AOI {{modality}}. L'angle de deskew provient de l'AOI ; les modèles sont découpés à partir de ces cellules.",
+    generateGridNeedAoi: "Dessinez d'abord le cadre à 4 coins (AOI), puis générez la grille.",
     copyRgbThermal: "Copier RGB → Thermique",
     copyRgbThermalTitle:
       "Copie l'AOI + la grille RGB vers la modalité thermique (mêmes coins/cellules en WGS84). Ajustez ensuite les coins thermiques si nécessaire.",

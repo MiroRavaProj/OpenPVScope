@@ -144,7 +144,6 @@ export function PhotogrammetryView(props: {
   const [thermalCount, setThermalCount] = useState(0);
   const [rgbOrtho, setRgbOrtho] = useState(false);
   const [thermalOrtho, setThermalOrtho] = useState(false);
-  const [rgbMissing, setRgbMissing] = useState(true);
   const [activeModality, setActiveModality] = useState<PhotoModality | "both" | null>(null);
   const [job, setJob] = useState<PhotoJobPublic | null>(null);
   const [running, setRunning] = useState(false);
@@ -217,7 +216,6 @@ export function PhotogrammetryView(props: {
       setEngine({ odx: rgb.odx, dji_sdk: rgb.dji_sdk });
       setRgbOrtho(rgb.ortho_exists);
       setThermalOrtho(th.ortho_exists);
-      setRgbMissing(!rgb.ortho_exists);
       const activeJob =
         rgb.job?.status === "running" ? rgb.job : th.job?.status === "running" ? th.job : rgb.job || th.job;
       setJob(activeJob ?? null);
@@ -243,7 +241,6 @@ export function PhotogrammetryView(props: {
           setEngine({ odx: rgb.odx, dji_sdk: rgb.dji_sdk });
           setRgbOrtho(rgb.ortho_exists);
           setThermalOrtho(th.ortho_exists);
-          setRgbMissing(!rgb.ortho_exists);
           setRunning(rgb.running);
 
           const prefer: PhotoModality =
@@ -467,7 +464,6 @@ export function PhotogrammetryView(props: {
       const p = await api.skipPhotogrammetry(skipTh, needRgb ? skipRgb : null);
       setRgbOrtho(!p.rgb_ortho_missing);
       setThermalOrtho(Boolean(p.thermal_ortho_ready));
-      setRgbMissing(Boolean(p.rgb_ortho_missing));
       await props.onProjectRefresh();
       if (p.orthos_ready) await props.onOrthosReady();
     } catch (e) {
@@ -589,8 +585,8 @@ export function PhotogrammetryView(props: {
           </button>
         </div>
         <p>{t("photo.blurb")}</p>
-        {thermalOnly && rgbMissing && (
-          <p className="photo-gate-note">{t("photo.wizard.rgbStillNeeded")}</p>
+        {thermalOnly && (
+          <p className="photo-gate-note muted">{t("photo.wizard.thermalOnlyNote")}</p>
         )}
         <div className="photo-engine-grid">
           <div className="photo-engine-item">

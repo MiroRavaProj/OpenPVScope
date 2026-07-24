@@ -68,7 +68,12 @@ from openpvscope.settings import (
     update_settings,
 )
 from openpvscope.thermal import detect_thermal_format, probe_dji_sdk
-from openpvscope.workflow import mark_step, orthos_ready, skip_photogrammetry_with_geotiffs
+from openpvscope.workflow import (
+    mark_step,
+    orthos_ready,
+    skip_alignment_for_thermal_only,
+    skip_photogrammetry_with_geotiffs,
+)
 
 app = FastAPI(title="OpenPVScope", version=__version__)
 
@@ -500,6 +505,7 @@ def _project_payload(store) -> dict[str, Any]:
                 layers.append({"id": key, "path": str(path), "error": str(e)})
     hist = store.history_status()
     setup = load_setup(root) if store.is_open else None
+    modalities = (setup or {}).get("modalities") if setup else None
     return {
         "manifest": manifest.model_dump(mode="json"),
         "workflow": workflow.model_dump(mode="json"),
@@ -507,6 +513,7 @@ def _project_payload(store) -> dict[str, Any]:
         "opsx_path": str(store.opsx_path) if store.opsx_path else None,
         "orthos_ready": orthos_ready(store),
         "photo_setup": setup,
+        "alignment_required": modalities != "thermal_only",
         "rgb_ortho_missing": not ortho_rgb(root).is_file(),
         "thermal_ortho_ready": ortho_thermal(root).is_file()
         or ortho_thermal_aligned(root).is_file(),
@@ -583,11 +590,12 @@ async def skip_photogrammetry(
         skip_photogrammetry_with_geotiffs(store, rgb_path, thermal_path)
         _refresh_overlays(store)
         store.autosave()
-        msg = (
-            "GeoTIFFs imported — continue to ortho alignment"
-            if orthos_ready(store)
-            else "Thermal imported — add RGB orthophoto before alignment"
-        )
+        if setup.get("modalities") == "thermal_only":
+            msg = "Thermal GeoTIFF imported — continue to detection"
+        elif orthos_ready(store):
+            msg = "GeoTIFFs imported — continue to ortho alignment"
+        else:
+            msg = "Thermal imported — add RGB orthophoto before alignment"
         console.end_job(ok=True, message=msg)
     except Exception as e:
         console.end_job(ok=False, message=str(e))
@@ -753,21 +761,14 @@ def _maybe_mark_photogrammetry_done(store) -> None:
     rgb_ok = ortho_rgb(store.root).is_file()
     if setup.get("modalities") == "thermal_only":
         if thermal_ok:
-            if rgb_ok:
-                mark_step(
-                    store,
-                    "photogrammetry",
-                    StepStatus.DONE,
-                    message="ODX thermal complete",
-                )
-            else:
-                mark_step(
-                    store,
-                    "photogrammetry",
-                    StepStatus.DONE,
-                    message="ODX thermal complete — RGB orthophoto still required for alignment",
-                    unlock_next=False,
-                )
+            mark_step(
+                store,
+                "photogrammetry",
+                StepStatus.DONE,
+                message="ODX thermal complete (thermal-only)",
+                unlock_next=True,
+            )
+            skip_alignment_for_thermal_only(store)
         return
     if rgb_ok and thermal_ok:
         mark_step(store, "photogrammetry", StepStatus.DONE, message="ODX complete")
@@ -1359,7 +1360,7 @@ def api_detection_run(body: DetectRunBody) -> dict[str, Any]:
     try:
         start_detection_job(
             store,
-            modality="both",
+            modality=body.modality,
             confidence_rgb=conf_rgb,
             confidence_thermal=conf_thermal,
             nms_iou=body.nms_iou,

@@ -11,6 +11,7 @@ export function LayerDock(props: {
   thermalOpacity: number;
   onThermalOpacityChange: (v: number) => void;
   onFitBounds: () => void;
+  hideRgb?: boolean;
 }) {
   const [dockMin, setDockMin] = useMinimized("layer-dock", false);
   const t = useT();
@@ -53,6 +54,7 @@ export function LayerDock(props: {
               {t("layers.satellite")}
             </button>
           </div>
+          {!props.hideRgb && (
           <label
             className="layer-row"
             title={t("layers.rgbOpacityTitle")}
@@ -67,6 +69,7 @@ export function LayerDock(props: {
               onChange={(e) => props.onRgbOpacityChange(Number(e.target.value))}
             />
           </label>
+          )}
           <label
             className="layer-row"
             title={t("layers.thermalOpacityTitle")}

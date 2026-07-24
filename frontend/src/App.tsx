@@ -534,7 +534,9 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
                   →
                 </button>
               </div>
-              {project.orthos_ready && step !== "alignment" && (
+              {project.orthos_ready &&
+                step !== "alignment" &&
+                project.photo_setup?.modalities !== "thermal_only" && (
                 <button onClick={() => setStep("alignment")}>{t("app.orthoAlignmentMap")}</button>
               )}
             </div>
@@ -555,7 +557,32 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
                 setupReloadToken={photoSetupTick}
               />
             )}
-            {step === "alignment" && (
+            {(step === "detection" || step === "segmentation") && project.orthos_ready && (
+              <PlantWorkspace
+                step={step}
+                onProjectChange={setProject}
+                onError={setError}
+                refreshProject={refresh}
+                thermalOnly={project.photo_setup?.modalities === "thermal_only"}
+              />
+            )}
+            {(step === "detection" || step === "segmentation") && !project.orthos_ready && (
+              <div className="card">
+                <h2>{stepLabel(step)}</h2>
+                <p>
+                  {project.photo_setup?.modalities === "thermal_only"
+                    ? t("app.gateNeedThermalOrtho")
+                    : t("app.gateNeedOrthos")}
+                </p>
+              </div>
+            )}
+            {step === "alignment" && project.photo_setup?.modalities === "thermal_only" && (
+              <div className="card">
+                <h2>{stepLabel("alignment")}</h2>
+                <p className="muted">{t("app.alignmentSkippedThermal")}</p>
+              </div>
+            )}
+            {step === "alignment" && project.photo_setup?.modalities !== "thermal_only" && (
               <OrthoAlignmentView
                 project={project}
                 onApplied={(p) => {
@@ -563,20 +590,6 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
                 }}
                 onError={setError}
               />
-            )}
-            {(step === "detection" || step === "segmentation") && project.orthos_ready && (
-              <PlantWorkspace
-                step={step}
-                onProjectChange={setProject}
-                onError={setError}
-                refreshProject={refresh}
-              />
-            )}
-            {(step === "detection" || step === "segmentation") && !project.orthos_ready && (
-              <div className="card">
-                <h2>{stepLabel(step)}</h2>
-                <p>{t("app.gateNeedOrthos")}</p>
-              </div>
             )}
             {step === "models" && <ScaffoldStep kind="models" />}
             {step === "classification" && <ScaffoldStep kind="classification" />}
