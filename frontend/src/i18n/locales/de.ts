@@ -242,6 +242,18 @@ export const de: Dict = {
     confThermal: "Thermal-Übereinstimmungskonfidenz",
     confThermalTitle:
       "Thermal-Übereinstimmungsschwelle (0–1). Höher = weniger Thermal-Boxen; niedriger = mehr Erkennungen (Thermal-Werte liegen oft niedriger als RGB). Standard 0,5.",
+    thermalMatchModeAria: "Thermal-Matching-Modus",
+    thermalMatchModeTitle:
+      "Wie Thermal-Templates gematcht werden. Modi auf demselben Raster vergleichen; RGB bleibt unverändert.",
+    thermalMatchModeHint: "Thermal-Matcher (Modi vergleichen, dann Erkennung neu starten)",
+    thermalMatchDefault: "Standard",
+    thermalMatchDefaultTitle: "Klassisches Graustufen-Template-Matching auf Temperatur.",
+    thermalMatchContext: "+15 % Kontext",
+    thermalMatchContextTitle:
+      "Matching mit um 15 % je Seite vergrößerten Templates, Ausgabe in exakter Panelgröße.",
+    thermalMatchGradient: "Gradient",
+    thermalMatchGradientTitle:
+      "Matching auf Sobel-Kantenmagnituden statt Roh-°C.",
     nms: "NMS IoU (Standard 0,05)",
     nmsTitle:
       "NMS-Überlappungs-IoU. Unterdrückt, wenn die Überlappung diesen Wert überschreitet. Höher = mehr nahe Boxen behalten; niedriger = aggressivere Unterdrückung. Standard 0,05.",
@@ -259,6 +271,9 @@ export const de: Dict = {
     fineTune: "Konfidenz feinabstimmen",
     fineTuneTitle:
       "Verfeinert die Konfidenzschwelle. Höher = behält nur starke Spitzenwerte (strengere Bereinigung); niedriger = behält mehr schwache / rasterfremde Erkennungen. Standard 0,65.",
+    keepHighConfOutliers: "Hochkonfidenz-Outlier behalten (Legacy soft)",
+    keepHighConfOutliersTitle:
+      "Aus (empfohlen): DBSCAN-Rauschen, Gitter-Outlier und isolierte Ränder rein geometrisch entfernen. An: Legacy-Softmodus — behält Ablehnungen mit Konfidenz ≥ Schwelle.",
     mapFilterRgb: "Kartenfilter RGB ≥ {{value}}",
     mapFilterRgbTitle:
       "Nur Kartenfilter für blaue (RGB) Boxen — führt die Erkennung nicht erneut aus. Höher = blendet schwächere RGB-Boxen aus; niedriger = zeigt mehr an. Standard 0,7.",

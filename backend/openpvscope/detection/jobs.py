@@ -10,10 +10,18 @@ from typing import Any, Literal
 from openpvscope.console import get_console
 from openpvscope.detection.pipeline import (
     DEFAULT_CONFIDENCE,
+    DEFAULT_FILL_CONFIDENCE,
+    DEFAULT_FINE_TUNING_CONFIDENCE,
+    DEFAULT_MIN_CLUSTER_SIZE,
+    DEFAULT_DBSCAN_MIN_SAMPLES,
     DEFAULT_NMS_IOU,
     DEFAULT_NUM_TEMPLATES,
+    DEFAULT_PITCH_SLACK,
+    DEFAULT_THERMAL_MATCH_MODE,
     DEFAULT_THERMAL_TEMP_CAP,
+    DEFAULT_WALK_TOL_FRAC,
     PIPELINE_REV,
+    ThermalMatchMode,
     run_detection,
 )
 from openpvscope.domain.models import StepStatus
@@ -42,7 +50,14 @@ def start_detection_job(
     num_templates: int = DEFAULT_NUM_TEMPLATES,
     thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
     advanced_validation: bool = True,
-    fine_tuning_confidence: float = 0.65,
+    fine_tuning_confidence: float = DEFAULT_FINE_TUNING_CONFIDENCE,
+    thermal_match_mode: ThermalMatchMode = DEFAULT_THERMAL_MATCH_MODE,
+    keep_high_conf_outliers: bool = False,
+    min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
+    dbscan_min_samples: int = DEFAULT_DBSCAN_MIN_SAMPLES,
+    walk_tol_frac: float = DEFAULT_WALK_TOL_FRAC,
+    pitch_slack: float = DEFAULT_PITCH_SLACK,
+    fill_confidence: float = DEFAULT_FILL_CONFIDENCE,
 ) -> None:
     global _thread
     with _lock:
@@ -65,7 +80,11 @@ def start_detection_job(
         console.log(
             f"Starting {label} | rgb_conf={confidence_rgb} thermal_conf={confidence_thermal} "
             f"nms={nms_iou} templates={tpl_label} thermal_cap={thermal_temp_cap} "
-            f"refine={advanced_validation} ft_conf={fine_tuning_confidence} | rev={PIPELINE_REV}",
+            f"thermal_mode={thermal_match_mode} refine={advanced_validation} "
+            f"ft_conf={fine_tuning_confidence} keep_high_conf_outliers={keep_high_conf_outliers} "
+            f"min_cluster={min_cluster_size} dbscan_ms={dbscan_min_samples} "
+            f"walk_tol={walk_tol_frac} pitch_slack={pitch_slack} "
+            f"fill_conf={fill_confidence} | rev={PIPELINE_REV}",
             level="info",
             step="detection",
         )
@@ -101,7 +120,8 @@ def start_detection_job(
                     console.log(msg, level=lvl, step="detection")
 
                 console.log(
-                    f"=== {mod.upper()} ({i + 1}/{n}) conf={conf} ===",
+                    f"=== {mod.upper()} ({i + 1}/{n}) conf={conf} "
+                    f"mode={thermal_match_mode if mod == 'thermal' else 'n/a'} ===",
                     level="info",
                     step="detection",
                 )
@@ -114,6 +134,13 @@ def start_detection_job(
                     thermal_temp_cap=thermal_temp_cap if mod == "thermal" else None,
                     advanced_validation=advanced_validation,
                     fine_tuning_confidence=fine_tuning_confidence,
+                    thermal_match_mode=thermal_match_mode,
+                    keep_high_conf_outliers=keep_high_conf_outliers,
+                    min_cluster_size=min_cluster_size,
+                    dbscan_min_samples=dbscan_min_samples,
+                    walk_tol_frac=walk_tol_frac,
+                    pitch_slack=pitch_slack,
+                    fill_confidence=fill_confidence,
                     progress=progress,
                     log=log_cb,
                 )

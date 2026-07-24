@@ -27,6 +27,11 @@ from openpvscope.detection import (
     start_detection_job,
 )
 from openpvscope.detection.pipeline import detection_dir
+from openpvscope.detection.panel_selection import (
+    apply_panel_selection,
+    load_panels_all,
+    set_panel_include,
+)
 from openpvscope.domain.models import PIPELINE_STEPS, StepStatus
 from openpvscope.exports import exports_status
 from openpvscope.geo.crs import bounds_to_wgs84
@@ -214,6 +219,20 @@ class DetectRunBody(BaseModel):
     modality: Literal["rgb", "thermal", "both"] = "both"
     advanced_validation: bool = True
     fine_tuning_confidence: float = Field(default=0.65, ge=0.1, le=0.99)
+    # Thermal-only matcher variants (ignored for RGB)
+    thermal_match_mode: Literal["default", "context_15", "gradient"] = "default"
+    # Legacy soft refine: keep high-conf DBSCAN/grid rejects (default off = strict geometry)
+    keep_high_conf_outliers: bool = False
+    # Drop clusters smaller than this after DBSCAN (not the DBSCAN density param)
+    min_cluster_size: int = Field(default=12, ge=3, le=200)
+    # DBSCAN core-point density (keep ~3–5 for panel lattices; larger values mark everything as noise)
+    dbscan_min_samples: int = Field(default=4, ge=2, le=50)
+    # Lattice walk / border / fill acceptance as fraction of largest pitch/panel side
+    walk_tol_frac: float = Field(default=0.10, ge=0.02, le=0.40)
+    # Allowed local pitch refine vs global (± fraction)
+    pitch_slack: float = Field(default=0.05, ge=0.0, le=0.30)
+    # Confidence assigned to Conway-synthesized panels
+    fill_confidence: float = Field(default=0.5, ge=0.05, le=0.99)
 
 
 class SegmentRunBody(BaseModel):
@@ -979,9 +998,11 @@ def map_layers() -> dict[str, Any]:
         "aoi": "/api/detection/geojson/aoi?modality=rgb",
         "grid": "/api/detection/geojson/grid?modality=rgb",
         "panels": "/api/detection/geojson/panels?modality=rgb",
+        "panels_all": "/api/detection/geojson/panels_all?modality=rgb",
         "aoi_thermal": "/api/detection/geojson/aoi?modality=thermal",
         "grid_thermal": "/api/detection/geojson/grid?modality=thermal",
         "panels_thermal": "/api/detection/geojson/panels?modality=thermal",
+        "panels_all_thermal": "/api/detection/geojson/panels_all?modality=thermal",
         "pairs": "/api/segmentation/pairs.geojson",
     }
     return {"layers": layers, "vectors": vectors}
@@ -1368,6 +1389,13 @@ def api_detection_run(body: DetectRunBody) -> dict[str, Any]:
             thermal_temp_cap=body.thermal_temp_cap,
             advanced_validation=body.advanced_validation,
             fine_tuning_confidence=body.fine_tuning_confidence,
+            thermal_match_mode=body.thermal_match_mode,
+            keep_high_conf_outliers=body.keep_high_conf_outliers,
+            min_cluster_size=body.min_cluster_size,
+            dbscan_min_samples=body.dbscan_min_samples,
+            walk_tol_frac=body.walk_tol_frac,
+            pitch_slack=body.pitch_slack,
+            fill_confidence=body.fill_confidence,
         )
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
@@ -1384,15 +1412,49 @@ def api_detection_geojson(
     name: str,
     modality: Literal["rgb", "thermal"] = "rgb",
 ) -> dict[str, Any]:
-    if name not in ("aoi", "grid", "panels"):
+    if name not in ("aoi", "grid", "panels", "panels_all"):
         raise HTTPException(404, "Unknown layer")
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
+    if name == "panels_all":
+        fc = load_panels_all(store.root, modality)
+        if not fc:
+            return {"type": "FeatureCollection", "features": []}
+        return fc
     fc = load_geojson(store.root, name, modality=modality)
     if not fc:
         return {"type": "FeatureCollection", "features": []}
     return fc
+
+
+class PanelSelectionBody(BaseModel):
+    modality: Literal["rgb", "thermal"] = "rgb"
+    include_ids: list[str] | None = None
+    exclude_ids: list[str] | None = None
+    set_fate: dict[str, Any] | None = None
+    reset_defaults: bool = False
+
+
+@app.put("/api/detection/panel-selection")
+def api_detection_panel_selection(body: PanelSelectionBody) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    store.checkpoint("Before panel selection")
+    try:
+        result = apply_panel_selection(
+            store.root,
+            body.modality,
+            include_ids=body.include_ids,
+            exclude_ids=body.exclude_ids,
+            set_fate=body.set_fate,
+            reset_defaults=body.reset_defaults,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    store.autosave()
+    return result
 
 
 @app.delete("/api/detection/panel/{panel_id}")
@@ -1403,22 +1465,13 @@ def api_detection_delete_panel(
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
-    import json
-
-    path = detection_dir(store.root, modality) / "panels.geojson"
-    fc = load_geojson(store.root, "panels", modality=modality)
-    if not fc:
-        raise HTTPException(404, "No panels")
     store.checkpoint("Before panel delete")
-    feats = [
-        f
-        for f in (fc.get("features") or [])
-        if str((f.get("properties") or {}).get("id") or f.get("id") or "") != panel_id
-    ]
-    fc["features"] = feats
-    path.write_text(json.dumps(fc), encoding="utf-8")
+    try:
+        result = set_panel_include(store.root, modality, panel_id, include=False)
+    except FileNotFoundError:
+        raise HTTPException(404, "No panels") from None
     store.autosave()
-    return {"ok": True, "panel_count": len(feats), "modality": modality}
+    return {"ok": True, "panel_count": result["included"], "modality": modality, **result}
 
 
 @app.post("/api/detection/clear")

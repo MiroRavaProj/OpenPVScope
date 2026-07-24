@@ -306,6 +306,17 @@ button.ghost {
   gap: 0.45rem !important;
 }
 
+.tool-advanced-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.45rem 0.55rem 0.55rem;
+  margin: 0.15rem 0 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
 .tool-field select {
   background: var(--bg, #121820);
   color: inherit;
@@ -464,6 +475,85 @@ button.ghost {
   flex-direction: column;
   gap: 0.55rem;
   pointer-events: none;
+}
+
+.review-dock {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  left: auto;
+  bottom: auto;
+  z-index: 3;
+  width: min(320px, calc(100% - 24px));
+  max-height: calc(100% - 68px);
+  pointer-events: auto;
+}
+
+.review-dock-body {
+  padding: 0.55rem 0.75rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow: auto;
+  max-height: min(70vh, 520px);
+}
+
+.review-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  opacity: 0.85;
+  line-height: 1.35;
+}
+
+.review-selected {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.review-fate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.review-fate-row {
+  display: grid;
+  grid-template-columns: 12px 1fr auto auto;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.review-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.review-fate-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-fate-count {
+  margin-left: 0.35rem;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-eye.off {
+  opacity: 0.45;
+}
+
+.review-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
 }
 
 .seg-dock > *,

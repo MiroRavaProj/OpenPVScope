@@ -242,6 +242,18 @@ export const it: Dict = {
     confThermal: "Confidenza match termico",
     confThermalTitle:
       "Soglia di match termico (0–1). Più alta = meno box termici; più bassa = più rilevamenti (i punteggi termici sono spesso più bassi di quelli RGB). Predefinito 0.5.",
+    thermalMatchModeAria: "Modalità matching termico",
+    thermalMatchModeTitle:
+      "Come vengono abbinati i template termici. Confronta le modalità sulla stessa griglia; l'RGB non cambia.",
+    thermalMatchModeHint: "Matcher termico (confronta le modalità, poi rilancia il rilevamento)",
+    thermalMatchDefault: "Default",
+    thermalMatchDefaultTitle: "Match template in scala di grigi sulla temperatura (comportamento attuale).",
+    thermalMatchContext: "+15% contesto",
+    thermalMatchContextTitle:
+      "Match con template allargati del 15% per lato (include bordi/interspazi), poi box alla dimensione esatta del pannello.",
+    thermalMatchGradient: "Gradiente",
+    thermalMatchGradientTitle:
+      "Match sulla magnitudine degli edge Sobel invece dei °C grezzi — privilegia i bordi rispetto all'erba piatta.",
     nms: "NMS IoU (predefinito 0.05)",
     nmsTitle:
       "IoU di sovrapposizione per la NMS. Sopprime quando la sovrapposizione supera questo valore. Più alto = mantiene più box vicini; più basso = sopprime in modo più aggressivo. Predefinito 0.05.",
@@ -259,6 +271,9 @@ export const it: Dict = {
     fineTune: "Raffina confidenza",
     fineTuneTitle:
       "Raffina la soglia di confidenza. Più alta = mantiene solo i picchi forti (potatura più rigorosa); più bassa = mantiene più rilevamenti deboli / fuori griglia. Predefinito 0.65.",
+    keepHighConfOutliers: "Mantieni outlier ad alta confidenza (soft legacy)",
+    keepHighConfOutliersTitle:
+      "Off (consigliato): elimina rumore DBSCAN, outlier di griglia e bordi sparsi solo per geometria. On: modalità soft legacy — tiene i rifiuti con confidenza ≥ soglia di raffinamento.",
     mapFilterRgb: "Filtro mappa RGB ≥ {{value}}",
     mapFilterRgbTitle:
       "Filtro solo mappa per i box blu (RGB) — non riesegue il rilevamento. Più alto = nasconde i box RGB più deboli; più basso = ne mostra di più. Predefinito 0.7.",

@@ -345,6 +345,61 @@ def _prep_template_channels(
     return tpl_channels
 
 
+def gradient_magnitude_u8(image: np.ndarray) -> np.ndarray:
+    """Sobel magnitude → robustly scaled uint8 (emphasizes edges / borders)."""
+    if image.ndim == 3 and image.shape[2] >= 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    elif image.ndim == 3:
+        gray = image[:, :, 0]
+    else:
+        gray = image
+    gray_f = np.ascontiguousarray(gray, dtype=np.float32)
+    gx = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    p1, p99 = np.percentile(mag, (1.0, 99.0))
+    if not np.isfinite(p1) or not np.isfinite(p99) or float(p99) <= float(p1):
+        return np.zeros(gray.shape[:2], dtype=np.uint8)
+    norm = np.clip((mag - float(p1)) / (float(p99) - float(p1)), 0.0, 1.0)
+    return (norm * 255.0).astype(np.uint8)
+
+
+def expand_bounds(
+    col0: int,
+    row0: int,
+    col1: int,
+    row1: int,
+    margin: float,
+) -> tuple[int, int, int, int]:
+    """Expand axis-aligned bounds by ``margin`` of width/height on each side."""
+    w = max(1, int(col1) - int(col0))
+    h = max(1, int(row1) - int(row0))
+    dx = w * float(margin)
+    dy = h * float(margin)
+    return (
+        int(np.floor(col0 - dx)),
+        int(np.floor(row0 - dy)),
+        int(np.ceil(col1 + dx)),
+        int(np.ceil(row1 + dy)),
+    )
+
+
+def _recenter_boxes_xywh(
+    boxes: list[list[float]],
+    report_wh: tuple[int, int],
+) -> list[list[float]]:
+    """Keep match centers; replace size with nominal panel ``report_wh``."""
+    rw, rh = float(report_wh[0]), float(report_wh[1])
+    if rw < 2 or rh < 2:
+        return boxes
+    out: list[list[float]] = []
+    for x, y, w, h in boxes:
+        cx = float(x) + float(w) / 2.0
+        cy = float(y) + float(h) / 2.0
+        out.append([cx - rw / 2.0, cy - rh / 2.0, rw, rh])
+    return out
+
+
 def _match_one_template(
     template_idx: int,
     tpl: np.ndarray,
@@ -396,6 +451,7 @@ def match_templates(
     threshold: float = 0.5,
     nms_iou: float = 0.05,
     use_color: bool = True,
+    report_wh: tuple[int, int] | None = None,
     progress: Callable[[float, str], None] | None = None,
 ) -> tuple[list[dict], int]:
     """
@@ -403,6 +459,10 @@ def match_templates(
 
     Mid-run NMS (RAM >= 70%, peaks >= 1000) uses iou = min(0.99, 2× nms_iou).
     Final NMS uses nms_iou.
+
+    If ``report_wh`` is set (e.g. context-expanded templates), peaks are
+    recentered to that nominal panel size **before** mid-run and final NMS
+    so neighboring panels are not suppressed by overlapping context boxes.
 
     Returns (detections, raw_peaks_seen) where raw_peaks_seen counts peaks
     before any mid-run prune.
@@ -470,6 +530,9 @@ def match_templates(
                                     f"template {template_idx + 1}/{n_tpl} {skip}",
                                 )
                             continue
+                        # Shrink context templates to panel size before buffering/NMS
+                        if report_wh is not None and boxes:
+                            boxes = _recenter_boxes_xywh(boxes, report_wh)
                         all_boxes.extend(boxes)
                         all_scores.extend(scores)
                         if progress:
@@ -587,7 +650,7 @@ def match_templates(
         x, y, w, h = detected[i]
         out.append(
             {
-                "bbox": (int(x), int(y), int(w), int(h)),
+                "bbox": (int(round(float(x))), int(round(float(y))), int(round(float(w))), int(round(float(h)))),
                 "confidence": float(scores_np[i]),
                 "template_index": 0,
             }

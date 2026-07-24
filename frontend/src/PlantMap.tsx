@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { api, GeoJsonFc, MapLayerInfo } from "./api";
 import type { DetectModality, DetectRunMode } from "./DetectionTools";
 import type { Basemap } from "./LayerDock";
+import { fateColorExpression, fateStrokeExpression, isPanelFate, type PanelFate } from "./panelFates";
 import { useT } from "./i18n";
 
 type TFn = ReturnType<typeof useT>;
@@ -36,6 +37,10 @@ export interface PlantMapProps {
   onThermalOpacityChange: (v: number) => void;
   /** Optional ref filled with fitBounds() for the Layers dock. */
   fitBoundsRef?: MutableRefObject<(() => void) | null>;
+  /** Detection: which refine fates are visible on the map. */
+  visibleFates?: Record<PanelFate, boolean>;
+  /** Detection: after click-toggle include on a panel. */
+  onPanelIncludeToggled?: () => void;
 }
 
 type TooltipState = {
@@ -99,11 +104,18 @@ function mergePanels(
   mode: DetectRunMode,
   minConfidenceRgb: number,
   minConfidenceThermal: number,
+  visibleFates?: Record<PanelFate, boolean> | null,
 ): GeoJsonFc {
   const filterFeats = (fc: GeoJsonFc, minConfidence: number) =>
     (fc.features || []).filter((f) => {
       const c = Number(f.properties?.confidence ?? 0);
-      return minConfidence <= 0 || c >= minConfidence;
+      if (minConfidence > 0 && c < minConfidence) return false;
+      if (visibleFates) {
+        const fateRaw = f.properties?.fate;
+        const fate: PanelFate = isPanelFate(fateRaw) ? fateRaw : "kept";
+        if (!visibleFates[fate]) return false;
+      }
+      return true;
     });
   if (mode === "rgb") {
     return { type: "FeatureCollection", features: filterFeats(rgb, minConfidenceRgb) };
@@ -212,9 +224,14 @@ function panelTooltipHtml(t: TFn, p: Record<string, unknown>, lng: number, lat: 
   const idRaw = String(p.id ?? "");
   const id = `${idRaw.slice(0, 10)}${idRaw.length > 10 ? "…" : ""}`;
   const mod = String(p.modality ?? "rgb").toUpperCase();
+  const cluster =
+    p.cluster_id === null || p.cluster_id === undefined || p.cluster_id === ""
+      ? "—"
+      : String(p.cluster_id);
   return `
     <div class="tip-title">${t("map.tipPanelTitle", { id })}</div>
     <div>${t("map.tipModality", { modality: mod })}</div>
+    <div>${t("map.tipCluster", { id: cluster })}</div>
     <div>${t("map.tipConfidence", { value: fmtNum(p.confidence) })}</div>
     <div class="tip-coords">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
   `;
@@ -271,12 +288,14 @@ export function PlantMap(props: PlantMapProps) {
     const minConfRgb = propsRef.current.displayConfidenceRgb ?? 0;
     const minConfThermal = propsRef.current.displayConfidenceThermal ?? 0;
     const mode = propsRef.current.mode;
+    const visibleFates = propsRef.current.visibleFates;
     try {
+      const layerName = mode === "detection" ? "panels_all" : "panels";
       const [aoi, grid, panelsRgb, panelsTh, pairs] = await Promise.all([
         api.detectionGeojson("aoi", modality),
         api.detectionGeojson("grid", modality),
-        api.detectionGeojson("panels", "rgb"),
-        api.detectionGeojson("panels", "thermal"),
+        api.detectionGeojson(layerName, "rgb"),
+        api.detectionGeojson(layerName, "thermal"),
         api.segmentationPairsGeojson(),
       ]);
       setGeoJson(map, "aoi", aoi);
@@ -289,7 +308,14 @@ export function PlantMap(props: PlantMapProps) {
         setGeoJson(
           map,
           "panels",
-          mergePanels(panelsRgb, panelsTh, showPanels, minConfRgb, minConfThermal),
+          mergePanels(
+            panelsRgb,
+            panelsTh,
+            showPanels,
+            minConfRgb,
+            minConfThermal,
+            visibleFates ?? null,
+          ),
         );
         setGeoJson(map, "pairs", EMPTY_FC);
       }
@@ -418,7 +444,36 @@ export function PlantMap(props: PlantMapProps) {
             : ["panels-fill"]
         ).filter((lid) => map.getLayer(lid));
         const feats = map.queryRenderedFeatures(ev.point, { layers });
-        if (!feats.length) propsRef.current.onSelect(null);
+        if (!feats.length) {
+          propsRef.current.onSelect(null);
+          return;
+        }
+        const props0 = feats[0].properties || {};
+        const pid = String(props0.id || feats[0].id || "");
+        if (modeRef.current === "detection" && pid) {
+          const include =
+            props0.include === true ||
+            props0.include === "true" ||
+            props0.include === 1 ||
+            props0.include === "1";
+          const mod = (props0.modality === "thermal" ? "thermal" : "rgb") as DetectModality;
+          void (async () => {
+            try {
+              await api.panelSelection({
+                modality: mod,
+                include_ids: include ? undefined : [pid],
+                exclude_ids: include ? [pid] : undefined,
+              });
+              propsRef.current.onSelect(pid);
+              propsRef.current.onPanelIncludeToggled?.();
+              await loadVectors(map);
+            } catch (err) {
+              propsRef.current.onError?.(String(err));
+            }
+          })();
+          return;
+        }
+        if (pid) propsRef.current.onSelect(pid);
         return;
       }
 
@@ -483,13 +538,17 @@ export function PlantMap(props: PlantMapProps) {
         type: "fill",
         source: "panels",
         paint: {
-          "fill-color": [
+          "fill-color": fateColorExpression(null) as never,
+          "fill-opacity": [
             "case",
-            ["==", ["get", "id"], propsRef.current.selectedId ?? ""],
-            "#e6a23c",
-            ["case", ["==", ["get", "modality"], "thermal"], "#c45c26", "#5b9fd4"],
+            [
+              "any",
+              ["==", ["get", "include"], true],
+              ["==", ["get", "include"], "true"],
+            ],
+            0.48,
+            0.28,
           ],
-          "fill-opacity": 0.35,
         },
       });
       map.addLayer({
@@ -497,13 +556,27 @@ export function PlantMap(props: PlantMapProps) {
         type: "line",
         source: "panels",
         paint: {
-          "line-color": [
+          "line-color": fateStrokeExpression(null) as never,
+          "line-width": [
             "case",
-            ["==", ["get", "modality"], "thermal"],
-            "#e89a6a",
-            "#8ec8f0",
+            [
+              "any",
+              ["==", ["get", "include"], true],
+              ["==", ["get", "include"], "true"],
+            ],
+            2.4,
+            1.4,
           ],
-          "line-width": 1.5,
+          "line-opacity": [
+            "case",
+            [
+              "any",
+              ["==", ["get", "include"], true],
+              ["==", ["get", "include"], "true"],
+            ],
+            1.0,
+            0.7,
+          ],
         },
       });
       map.addLayer({
@@ -705,6 +778,7 @@ export function PlantMap(props: PlantMapProps) {
     props.displayConfidenceRgb,
     props.displayConfidenceThermal,
     props.mode,
+    props.visibleFates,
     loadVectors,
     mapReady,
     syncEditMarkers,
@@ -749,18 +823,18 @@ export function PlantMap(props: PlantMapProps) {
     if (!map) return;
     const sid = props.selectedId ?? "";
     if (map.getLayer("panels-fill")) {
-      map.setPaintProperty("panels-fill", "fill-color", [
-        "case",
-        ["==", ["get", "id"], sid],
-        "#e6a23c",
-        ["case", ["==", ["get", "modality"], "thermal"], "#c45c26", "#5b9fd4"],
-      ]);
+      const fillExpr = fateColorExpression(sid) as never;
+      const strokeExpr = fateStrokeExpression(sid) as never;
+      map.setPaintProperty("panels-fill", "fill-color", fillExpr);
+      if (map.getLayer("panels-line")) {
+        map.setPaintProperty("panels-line", "line-color", strokeExpr);
+      }
     }
     if (map.getLayer("pairs-fill")) {
       map.setPaintProperty("pairs-fill", "fill-color", [
         "case",
         ["==", ["get", "id"], sid],
-        "#ffffff",
+        "#ffab00",
         ["coalesce", ["get", "fill_color"], "#808080"],
       ]);
       map.setPaintProperty("pairs-fill", "fill-opacity", [
@@ -774,7 +848,7 @@ export function PlantMap(props: PlantMapProps) {
       map.setPaintProperty("pairs-line", "line-color", [
         "case",
         ["==", ["get", "id"], sid],
-        "#ffffff",
+        "#ffab00",
         "#222222",
       ]);
       map.setPaintProperty("pairs-line", "line-width", [

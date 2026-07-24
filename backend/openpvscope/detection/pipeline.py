@@ -21,8 +21,15 @@ from openpvscope.detection.deskew import (
     warp_image,
 )
 from openpvscope.detection.grid import build_grid_cells, regularize_quad
+from openpvscope.detection.panel_selection import write_panels_from_features
 from openpvscope.detection.refine import run_advanced_validation
-from openpvscope.detection.template_match import _Heartbeat, extract_patch, match_templates
+from openpvscope.detection.template_match import (
+    _Heartbeat,
+    expand_bounds,
+    extract_patch,
+    gradient_magnitude_u8,
+    match_templates,
+)
 from openpvscope.geo.crs import (
     feature_collection,
     polygon_feature,
@@ -36,6 +43,7 @@ ProgressCb = Callable[[float | None, str], None]
 # Extended: optional level kw via a thin wrapper in jobs — pipeline uses prog/vlog
 LogCb = Callable[[str, str], None]
 Modality = Literal["rgb", "thermal"]
+ThermalMatchMode = Literal["default", "context_15", "gradient"]
 
 # Legacy suite defaults (template_matching_threshold / nms / display filter)
 DEFAULT_CONFIDENCE = 0.5
@@ -43,7 +51,15 @@ DEFAULT_NMS_IOU = 0.05
 DEFAULT_NUM_TEMPLATES = 0  # 0 => all grid cells
 DEFAULT_THERMAL_TEMP_CAP = 45.0  # °C
 DEFAULT_DISPLAY_CONFIDENCE = 0.7  # map visualization filter only
-PIPELINE_REV = "detect-v11"
+DEFAULT_THERMAL_MATCH_MODE: ThermalMatchMode = "default"
+DEFAULT_MIN_CLUSTER_SIZE = 12
+DEFAULT_DBSCAN_MIN_SAMPLES = 4
+DEFAULT_WALK_TOL_FRAC = 0.10
+DEFAULT_PITCH_SLACK = 0.05
+DEFAULT_FILL_CONFIDENCE = 0.5
+DEFAULT_FINE_TUNING_CONFIDENCE = 0.65
+CONTEXT_EXPAND_MARGIN = 0.15  # each side for context_15 mode
+PIPELINE_REV = "detect-v24"
 
 
 def detection_dir(root: Path, modality: Modality = "rgb") -> Path:
@@ -209,13 +225,25 @@ def run_detection(
     num_templates: int = DEFAULT_NUM_TEMPLATES,
     thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
     advanced_validation: bool = True,
-    fine_tuning_confidence: float = 0.65,
+    fine_tuning_confidence: float = DEFAULT_FINE_TUNING_CONFIDENCE,
+    thermal_match_mode: ThermalMatchMode = DEFAULT_THERMAL_MATCH_MODE,
+    keep_high_conf_outliers: bool = False,
+    min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
+    dbscan_min_samples: int = DEFAULT_DBSCAN_MIN_SAMPLES,
+    walk_tol_frac: float = DEFAULT_WALK_TOL_FRAC,
+    pitch_slack: float = DEFAULT_PITCH_SLACK,
+    fill_confidence: float = DEFAULT_FILL_CONFIDENCE,
     progress: ProgressCb | None = None,
     log: LogCb | None = None,
 ) -> dict[str, Any]:
     root = Path(root)
     ortho = _ortho_for(root, modality)
     det_dir = detection_dir(root, modality)
+    match_mode: ThermalMatchMode = (
+        thermal_match_mode if modality == "thermal" else "default"
+    )
+    if match_mode not in ("default", "context_15", "gradient"):
+        match_mode = "default"
 
     def prog(p: float | None, msg: str, *, level: str = "info") -> None:
         if progress:
@@ -247,6 +275,7 @@ def run_detection(
         raise RuntimeError("Grid has no cells")
 
     features: list[dict] = []
+    features_all: list[dict] = []
     out = det_dir / "panels.geojson"
     refine_stats: dict[str, Any] | None = None
 
@@ -263,7 +292,7 @@ def run_detection(
         vlog(
             f"[{modality}] params confidence={confidence} nms_iou={nms_iou} "
             f"num_templates={'ALL' if num_templates <= 0 else num_templates} "
-            f"thermal_cap={thermal_temp_cap}"
+            f"thermal_cap={thermal_temp_cap} match_mode={match_mode}"
         )
         prog(12, f"Deskew {angle:.2f}° — reading FULL orthomosaic")
 
@@ -306,6 +335,12 @@ def run_detection(
         vlog(f"[{modality}] search after deskew: {rotated.shape[1]}x{rotated.shape[0]} ndim={rotated.ndim}")
         del image
 
+        search = rotated
+        if match_mode == "gradient":
+            prog(36, "Gradient magnitude (thermal edge match)")
+            search = gradient_magnitude_u8(rotated)
+            vlog(f"[{modality}] gradient search image ready dtype={search.dtype}")
+
         prog(40, "Building templates from ALL grid cells" if num_templates <= 0 else "Building templates from grid")
         if num_templates <= 0:
             feats_for_tpl = grid_feats
@@ -313,6 +348,8 @@ def run_detection(
             feats_for_tpl = grid_feats[: max(1, min(int(num_templates), len(grid_feats)))]
 
         templates: list[np.ndarray] = []
+        panel_sizes: list[tuple[int, int]] = []
+        context_margin = CONTEXT_EXPAND_MARGIN if match_mode == "context_15" else 0.0
         n_feats = len(feats_for_tpl)
         for fi, feat in enumerate(feats_for_tpl):
             if fi % 5 == 0 or fi + 1 == n_feats:
@@ -331,21 +368,35 @@ def run_detection(
                 corners_rot.append((rx, ry))
             xs_t = [c[0] for c in corners_rot]
             ys_t = [c[1] for c in corners_rot]
-            patch = extract_patch(
-                rotated,
-                int(math.floor(min(xs_t))),
-                int(math.floor(min(ys_t))),
-                int(math.ceil(max(xs_t))),
-                int(math.ceil(max(ys_t))),
-            )
+            c0 = int(math.floor(min(xs_t)))
+            r0 = int(math.floor(min(ys_t)))
+            c1 = int(math.ceil(max(xs_t)))
+            r1 = int(math.ceil(max(ys_t)))
+            panel_w = max(1, c1 - c0)
+            panel_h = max(1, r1 - r0)
+            if context_margin > 0:
+                c0, r0, c1, r1 = expand_bounds(c0, r0, c1, r1, context_margin)
+            patch = extract_patch(search, c0, r0, c1, r1)
             if patch is not None and patch.shape[0] >= 4 and patch.shape[1] >= 4:
                 templates.append(patch)
+                panel_sizes.append((panel_w, panel_h))
         if not templates:
             raise RuntimeError(f"Could not extract a template from the {modality} grid")
-        vlog(f"[{modality}] templates={len(templates)} (from {len(feats_for_tpl)} cells)")
-        ilog(f"[{modality}] using {len(templates)} templates")
+        vlog(f"[{modality}] templates={len(templates)} (from {len(feats_for_tpl)} cells) mode={match_mode}")
+        ilog(f"[{modality}] using {len(templates)} templates ({match_mode})")
 
-        prog(55, f"Multi-template matching ({len(templates)} tpl, color={use_color})")
+        report_wh: tuple[int, int] | None = None
+        if match_mode == "context_15" and panel_sizes:
+            report_wh = (
+                int(round(float(np.mean([w for w, _ in panel_sizes])))),
+                int(round(float(np.mean([h for _, h in panel_sizes])))),
+            )
+            vlog(f"[{modality}] context_15 report_wh={report_wh[0]}x{report_wh[1]}")
+
+        prog(
+            55,
+            f"Multi-template matching ({len(templates)} tpl, color={use_color}, mode={match_mode})",
+        )
 
         def match_prog(local_pct: float, msg: str) -> None:
             # Map matching phase into 55–82% of this modality's progress
@@ -354,11 +405,12 @@ def run_detection(
             vlog(f"[{modality}] {msg}")
 
         all_dets, raw_peaks = match_templates(
-            rotated,
+            search,
             templates,
             threshold=confidence,
             nms_iou=nms_iou,
-            use_color=use_color,
+            use_color=use_color and match_mode != "gradient",
+            report_wh=report_wh,
             progress=match_prog,
         )
         prog(82, f"{len(all_dets)} panels after NMS (from {raw_peaks} peaks)")
@@ -366,9 +418,13 @@ def run_detection(
         ilog(f"[{modality}] {len(all_dets)} panels after NMS (from {raw_peaks} peaks)")
 
         refine_stats = None
+        audit_dets: list[dict[str, Any]] | None = None
         if advanced_validation and all_dets:
-            tw = float(np.mean([t.shape[1] for t in templates]))
-            th = float(np.mean([t.shape[0] for t in templates]))
+            if report_wh is not None:
+                tw, th = float(report_wh[0]), float(report_wh[1])
+            else:
+                tw = float(np.mean([t.shape[1] for t in templates]))
+                th = float(np.mean([t.shape[0] for t in templates]))
 
             def refine_prog(_p: float | None, msg: str) -> None:
                 prog(83, msg)
@@ -379,18 +435,38 @@ def run_detection(
                 tw,
                 th,
                 fine_tuning_confidence_threshold=fine_tuning_confidence,
+                keep_high_conf_outliers=keep_high_conf_outliers,
+                min_samples=int(dbscan_min_samples),
+                min_cluster_size=int(min_cluster_size),
+                walk_tol_frac=float(walk_tol_frac),
+                pitch_slack=float(pitch_slack),
+                fill_confidence=float(fill_confidence),
                 progress=refine_prog,
             )
+            audit_dets = list(refine_stats.pop("all_detections", None) or [])
             ilog(
                 f"[{modality}] refine: {refine_stats['input']} → {refine_stats['after_step3']} "
-                f"(filled +{refine_stats['filled']})"
+                f"(filled +{refine_stats['filled']}, "
+                f"step1 {refine_stats['after_step1']}, step2 {refine_stats['after_step2']}, "
+                f"strict={not keep_high_conf_outliers}, audit={len(audit_dets)})"
             )
+
+        if not audit_dets:
+            audit_dets = []
+            for det in all_dets:
+                dd = dict(det)
+                dd.setdefault("fate", "kept")
+                dd.setdefault("include", True)
+                audit_dets.append(dd)
 
         seed_ring = [[float(p[0]), float(p[1])] for p in grid_feats[0]["geometry"]["coordinates"][0][:4]]
         centers: list[tuple[float, float]] = []
         det_meta: list[dict[str, Any]] = []
-        for det in all_dets:
-            x, y, w, h = det["bbox"]
+        for det in audit_dets:
+            bp = det.get("bbox") or det.get("bbox_pixels")
+            if not bp or len(bp) < 4:
+                continue
+            x, y, w, h = float(bp[0]), float(bp[1]), float(bp[2]), float(bp[3])
             cx_r, cy_r = x + w / 2.0, y + h / 2.0
             col, row = apply_m(m_inv, cx_r, cy_r)
             x_crs, y_crs = pixel_to_crs(col, row)
@@ -408,14 +484,17 @@ def run_detection(
                     "border_outlier": bool(det.get("border_outlier", False)),
                     "filled_panel": bool(det.get("filled_panel", False)),
                     "restored_panel": bool(det.get("restored_panel", False)),
+                    "fate": str(det.get("fate") or "kept"),
+                    "include": bool(det.get("include", True)),
                 }
             )
 
-        prog(88, f"Writing {len(centers)} oriented panels [{PIPELINE_REV}]")
+        prog(88, f"Writing {len(centers)} audit panels [{PIPELINE_REV}]")
         quads = oriented_quads_from_seed(seed_ring, centers)
+        features_all: list[dict[str, Any]] = []
         for ring_ll, meta in zip(quads, det_meta):
             pid = uuid.uuid4().hex[:12]
-            features.append(
+            features_all.append(
                 polygon_feature(
                     ring_ll,
                     {
@@ -430,16 +509,20 @@ def run_detection(
                         "is_grid_aligned": meta["is_grid_aligned"],
                         "filled_panel": meta["filled_panel"],
                         "restored_panel": meta["restored_panel"],
+                        "fate": meta["fate"],
+                        "include": meta["include"],
                     },
                     fid=pid,
                 )
             )
 
-        atomic_write_json(out, feature_collection(features, name="panels"))
+        fate_summary = write_panels_from_features(root, modality, features_all)
+        features = [f for f in features_all if (f.get("properties") or {}).get("include")]
         atomic_write_json(
             det_dir / "detection_meta.json",
             {
                 "count": len(features),
+                "audit_count": len(features_all),
                 "confidence": confidence,
                 "nms_iou": nms_iou,
                 "templates_used": len(templates),
@@ -448,22 +531,32 @@ def run_detection(
                 "modality": modality,
                 "search_mode": "full_ortho",
                 "thermal_temp_cap": thermal_temp_cap if modality == "thermal" else None,
+                "thermal_match_mode": match_mode if modality == "thermal" else None,
                 "search_size": [int(rotated.shape[1]), int(rotated.shape[0])],
                 "ortho_size": [out_w, out_h],
                 "pipeline_rev": PIPELINE_REV,
                 "advanced_validation": advanced_validation,
                 "fine_tuning_confidence": fine_tuning_confidence,
+                "keep_high_conf_outliers": keep_high_conf_outliers,
+                "min_cluster_size": int(min_cluster_size),
+                "dbscan_min_samples": int(dbscan_min_samples),
+                "walk_tol_frac": float(walk_tol_frac),
+                "pitch_slack": float(pitch_slack),
+                "fill_confidence": float(fill_confidence),
                 "refine_stats": refine_stats,
+                "fate_summary": fate_summary,
             },
         )
-        vlog(f"[{modality}] wrote {out}")
+        vlog(f"[{modality}] wrote panels ({len(features)}) + panels_all ({len(features_all)})")
 
     prog(100, f"{modality} detection complete — {len(features)} panels [{PIPELINE_REV}]")
     return {
         "count": len(features),
+        "audit_count": len(features_all),
         "path": str(out),
         "modality": modality,
         "pipeline_rev": PIPELINE_REV,
+        "thermal_match_mode": match_mode if modality == "thermal" else None,
         "refine_stats": refine_stats if advanced_validation else None,
     }
 
@@ -539,6 +632,15 @@ def detection_status(project_root: Path) -> dict[str, Any]:
             "num_templates": DEFAULT_NUM_TEMPLATES,
             "thermal_temp_cap": DEFAULT_THERMAL_TEMP_CAP,
             "display_confidence": DEFAULT_DISPLAY_CONFIDENCE,
+            "thermal_match_mode": DEFAULT_THERMAL_MATCH_MODE,
+            "min_cluster_size": DEFAULT_MIN_CLUSTER_SIZE,
+            "dbscan_min_samples": DEFAULT_DBSCAN_MIN_SAMPLES,
+            "walk_tol_frac": DEFAULT_WALK_TOL_FRAC,
+            "pitch_slack": DEFAULT_PITCH_SLACK,
+            "fill_confidence": DEFAULT_FILL_CONFIDENCE,
+            "fine_tuning_confidence": DEFAULT_FINE_TUNING_CONFIDENCE,
+            "keep_high_conf_outliers": False,
+            "advanced_validation": True,
         },
     }
 
@@ -557,6 +659,7 @@ def clear_detection(root: Path, modality: Modality | None = None) -> None:
             "grid.geojson",
             "grid_meta.json",
             "panels.geojson",
+            "panels_all.geojson",
             "detection_meta.json",
         ):
             p = det_dir / name

@@ -242,6 +242,18 @@ export const fr: Dict = {
     confThermal: "Confiance de correspondance thermique",
     confThermalTitle:
       "Seuil de correspondance thermique (0–1). Plus élevé = moins de boîtes thermiques ; plus bas = plus de détections (les scores thermiques sont souvent plus bas que le RGB). Par défaut 0,5.",
+    thermalMatchModeAria: "Mode de correspondance thermique",
+    thermalMatchModeTitle:
+      "Comment les modèles thermiques sont appariés. Comparez les modes sur la même grille ; le RGB ne change pas.",
+    thermalMatchModeHint: "Matcher thermique (comparer les modes, puis relancer la détection)",
+    thermalMatchDefault: "Par défaut",
+    thermalMatchDefaultTitle: "Correspondance classique en niveaux de gris sur la température.",
+    thermalMatchContext: "+15 % contexte",
+    thermalMatchContextTitle:
+      "Appariement avec des modèles élargis de 15 % de chaque côté, puis boîtes à la taille exacte du panneau.",
+    thermalMatchGradient: "Gradient",
+    thermalMatchGradientTitle:
+      "Appariement sur la magnitude des contours Sobel plutôt que les °C bruts.",
     nms: "NMS IoU (par défaut 0,05)",
     nmsTitle:
       "IoU de chevauchement pour la NMS. Supprime lorsque le chevauchement dépasse cette valeur. Plus élevé = conserve plus de boîtes proches ; plus bas = suppression plus agressive. Par défaut 0,05.",
@@ -259,6 +271,9 @@ export const fr: Dict = {
     fineTune: "Affiner la confiance",
     fineTuneTitle:
       "Affine le seuil de confiance. Plus élevé = ne conserve que les pics forts (élagage plus strict) ; plus bas = conserve plus de détections faibles / hors grille. Par défaut 0,65.",
+    keepHighConfOutliers: "Garder les outliers haute confiance (soft legacy)",
+    keepHighConfOutliersTitle:
+      "Off (recommandé) : supprimer bruit DBSCAN, outliers de grille et bords isolés par géométrie seule. On : mode soft legacy — conserve les rejets avec confiance ≥ seuil.",
     mapFilterRgb: "Filtre carte RGB ≥ {{value}}",
     mapFilterRgbTitle:
       "Filtre carte uniquement pour les boîtes bleues (RGB) — ne relance pas la détection. Plus élevé = masque les boîtes RGB plus faibles ; plus bas = en affiche plus. Par défaut 0,7.",

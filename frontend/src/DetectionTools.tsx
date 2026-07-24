@@ -5,6 +5,7 @@ import { useMinimized } from "./ui/useMinimized";
 
 export type DetectModality = "rgb" | "thermal";
 export type DetectRunMode = "rgb" | "thermal" | "both";
+export type ThermalMatchMode = "default" | "context_15" | "gradient";
 
 export function DetectionTools(props: {
   onRefreshMap: () => void;
@@ -49,9 +50,16 @@ export function DetectionTools(props: {
   const [confidenceThermal, setConfidenceThermal] = useState(0.5);
   const [advancedValidation, setAdvancedValidation] = useState(true);
   const [fineTuneConf, setFineTuneConf] = useState(0.65);
+  const [keepHighConfOutliers, setKeepHighConfOutliers] = useState(false);
+  const [minClusterSize, setMinClusterSize] = useState(12);
+  const [dbscanMinSamples, setDbscanMinSamples] = useState(4);
+  const [walkTolFrac, setWalkTolFrac] = useState(0.1);
+  const [pitchSlack, setPitchSlack] = useState(0.05);
+  const [fillConfidence, setFillConfidence] = useState(0.5);
   const [nms, setNms] = useState(0.05);
   const [numTemplates, setNumTemplates] = useState(0); // 0 = all grid cells
   const [thermalCap, setThermalCap] = useState(45);
+  const [thermalMatchMode, setThermalMatchMode] = useState<ThermalMatchMode>("default");
   const [status, setStatus] = useState("");
   const [rgbCount, setRgbCount] = useState(0);
   const [thermalCount, setThermalCount] = useState(0);
@@ -167,6 +175,13 @@ export function DetectionTools(props: {
         thermal_temp_cap: thermalCap,
         advanced_validation: advancedValidation,
         fine_tuning_confidence: fineTuneConf,
+        keep_high_conf_outliers: keepHighConfOutliers,
+        min_cluster_size: minClusterSize,
+        dbscan_min_samples: dbscanMinSamples,
+        walk_tol_frac: walkTolFrac,
+        pitch_slack: pitchSlack,
+        fill_confidence: fillConfidence,
+        thermal_match_mode: thermalMatchMode,
         modality: thermalOnly ? "thermal" : "both",
       });
       setRunning(true);
@@ -377,6 +392,38 @@ export function DetectionTools(props: {
           onChange={(e) => setConfidenceThermal(Number(e.target.value))}
         />
       </label>
+      <div
+        className="basemap-toggle"
+        role="group"
+        aria-label={t("detection.thermalMatchModeAria")}
+        title={t("detection.thermalMatchModeTitle")}
+      >
+        <button
+          type="button"
+          className={thermalMatchMode === "default" ? "active" : ""}
+          title={t("detection.thermalMatchDefaultTitle")}
+          onClick={() => setThermalMatchMode("default")}
+        >
+          {t("detection.thermalMatchDefault")}
+        </button>
+        <button
+          type="button"
+          className={thermalMatchMode === "context_15" ? "active" : ""}
+          title={t("detection.thermalMatchContextTitle")}
+          onClick={() => setThermalMatchMode("context_15")}
+        >
+          {t("detection.thermalMatchContext")}
+        </button>
+        <button
+          type="button"
+          className={thermalMatchMode === "gradient" ? "active" : ""}
+          title={t("detection.thermalMatchGradientTitle")}
+          onClick={() => setThermalMatchMode("gradient")}
+        >
+          {t("detection.thermalMatchGradient")}
+        </button>
+      </div>
+      <p className="muted tool-hint">{t("detection.thermalMatchModeHint")}</p>
       <label
         className="tool-field"
         title={t("detection.nmsTitle")}
@@ -430,21 +477,88 @@ export function DetectionTools(props: {
         />
         {t("detection.advancedValidation")}
       </label>
-      <label
-        className="tool-field"
-        title={t("detection.fineTuneTitle")}
-      >
-        {t("detection.fineTune")}
-        <input
-          type="number"
-          min={0.1}
-          max={0.99}
-          step={0.01}
-          value={fineTuneConf}
-          disabled={!advancedValidation}
-          onChange={(e) => setFineTuneConf(Number(e.target.value))}
-        />
-      </label>
+      {advancedValidation && (
+        <div className="tool-advanced-block">
+          <p className="muted tool-hint">{t("detection.advancedBlockHint")}</p>
+          <label className="tool-field" title={t("detection.minClusterTitle")}>
+            {t("detection.minCluster")}
+            <input
+              type="number"
+              min={3}
+              max={200}
+              step={1}
+              value={minClusterSize}
+              onChange={(e) => setMinClusterSize(Number(e.target.value))}
+            />
+          </label>
+          <label className="tool-field" title={t("detection.dbscanMinTitle")}>
+            {t("detection.dbscanMin")}
+            <input
+              type="number"
+              min={2}
+              max={50}
+              step={1}
+              value={dbscanMinSamples}
+              onChange={(e) => setDbscanMinSamples(Number(e.target.value))}
+            />
+          </label>
+          <label className="tool-field" title={t("detection.fineTuneTitle")}>
+            {t("detection.fineTune")}
+            <input
+              type="number"
+              min={0.1}
+              max={0.99}
+              step={0.01}
+              value={fineTuneConf}
+              onChange={(e) => setFineTuneConf(Number(e.target.value))}
+            />
+          </label>
+          <label className="tool-field" title={t("detection.walkTolTitle")}>
+            {t("detection.walkTol", { pct: Math.round(walkTolFrac * 100) })}
+            <input
+              type="number"
+              min={0.02}
+              max={0.4}
+              step={0.01}
+              value={walkTolFrac}
+              onChange={(e) => setWalkTolFrac(Number(e.target.value))}
+            />
+          </label>
+          <label className="tool-field" title={t("detection.pitchSlackTitle")}>
+            {t("detection.pitchSlack", { pct: Math.round(pitchSlack * 100) })}
+            <input
+              type="number"
+              min={0}
+              max={0.3}
+              step={0.01}
+              value={pitchSlack}
+              onChange={(e) => setPitchSlack(Number(e.target.value))}
+            />
+          </label>
+          <label className="tool-field" title={t("detection.fillConfTitle")}>
+            {t("detection.fillConf")}
+            <input
+              type="number"
+              min={0.05}
+              max={0.99}
+              step={0.01}
+              value={fillConfidence}
+              onChange={(e) => setFillConfidence(Number(e.target.value))}
+            />
+          </label>
+          <label
+            className="tool-field tool-check"
+            title={t("detection.keepHighConfOutliersTitle")}
+          >
+            <input
+              type="checkbox"
+              checked={keepHighConfOutliers}
+              onChange={(e) => setKeepHighConfOutliers(e.target.checked)}
+            />
+            {t("detection.keepHighConfOutliers")}
+          </label>
+        </div>
+      )}
       {!thermalOnly && (
       <label
         className="tool-field"

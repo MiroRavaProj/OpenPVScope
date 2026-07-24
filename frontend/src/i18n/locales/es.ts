@@ -242,6 +242,18 @@ export const es: Dict = {
     confThermal: "Confianza de coincidencia térmica",
     confThermalTitle:
       "Umbral de coincidencia térmica (0–1). Más alto = menos cajas térmicas; más bajo = más detecciones (las puntuaciones térmicas suelen ser más bajas que las RGB). Predeterminado 0.5.",
+    thermalMatchModeAria: "Modo de coincidencia térmica",
+    thermalMatchModeTitle:
+      "Cómo se emparejan las plantillas térmicas. Compara modos en la misma cuadrícula; RGB no cambia.",
+    thermalMatchModeHint: "Matcher térmico (compara modos y vuelve a detectar)",
+    thermalMatchDefault: "Por defecto",
+    thermalMatchDefaultTitle: "Coincidencia clásica en escala de grises sobre temperatura.",
+    thermalMatchContext: "+15% contexto",
+    thermalMatchContextTitle:
+      "Coincidencia con plantillas ampliadas un 15% por lado; cajas a tamaño exacto del panel.",
+    thermalMatchGradient: "Gradiente",
+    thermalMatchGradientTitle:
+      "Coincidencia sobre magnitud de bordes Sobel en lugar de °C crudos.",
     nms: "NMS IoU (predeterminado 0.05)",
     nmsTitle:
       "IoU de solapamiento para NMS. Suprime cuando el solapamiento supera este valor. Más alto = conserva más cajas cercanas; más bajo = suprime de forma más agresiva. Predeterminado 0.05.",
@@ -259,6 +271,9 @@ export const es: Dict = {
     fineTune: "Ajustar confianza",
     fineTuneTitle:
       "Refina el umbral de confianza. Más alto = conserva solo los picos fuertes (poda más estricta); más bajo = conserva más detecciones débiles / fuera de cuadrícula. Predeterminado 0.65.",
+    keepHighConfOutliers: "Conservar outliers de alta confianza (soft legacy)",
+    keepHighConfOutliersTitle:
+      "Off (recomendado): eliminar ruido DBSCAN, outliers de rejilla y bordes sueltos solo por geometría. On: modo soft legacy — conserva rechazos con confianza ≥ umbral.",
     mapFilterRgb: "Filtro de mapa RGB ≥ {{value}}",
     mapFilterRgbTitle:
       "Filtro solo de mapa para cajas azules (RGB); no vuelve a ejecutar la detección. Más alto = oculta cajas RGB más débiles; más bajo = muestra más. Predeterminado 0.7.",

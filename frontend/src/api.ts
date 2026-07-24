@@ -481,6 +481,13 @@ export const api = {
     thermal_temp_cap?: number | null;
     advanced_validation?: boolean;
     fine_tuning_confidence?: number;
+    thermal_match_mode?: "default" | "context_15" | "gradient";
+    keep_high_conf_outliers?: boolean;
+    min_cluster_size?: number;
+    dbscan_min_samples?: number;
+    walk_tol_frac?: number;
+    pitch_slack?: number;
+    fill_confidence?: number;
     modality?: "rgb" | "thermal" | "both";
   }) =>
     req<{ started: boolean }>("/api/detection/run", {
@@ -495,12 +502,39 @@ export const api = {
         modality: opts.modality ?? "both",
         advanced_validation: opts.advanced_validation ?? true,
         fine_tuning_confidence: opts.fine_tuning_confidence ?? 0.65,
+        thermal_match_mode: opts.thermal_match_mode ?? "default",
+        keep_high_conf_outliers: opts.keep_high_conf_outliers ?? false,
+        min_cluster_size: opts.min_cluster_size ?? 12,
+        dbscan_min_samples: opts.dbscan_min_samples ?? 4,
+        walk_tol_frac: opts.walk_tol_frac ?? 0.1,
+        pitch_slack: opts.pitch_slack ?? 0.05,
+        fill_confidence: opts.fill_confidence ?? 0.5,
       }),
     }),
   detectionJob: () =>
     req<{ running: boolean; error: string | null; result: unknown }>("/api/detection/job"),
-  detectionGeojson: (name: "aoi" | "grid" | "panels", modality: "rgb" | "thermal" = "rgb") =>
-    req<GeoJsonFc>(`/api/detection/geojson/${name}?modality=${modality}`),
+  detectionGeojson: (
+    name: "aoi" | "grid" | "panels" | "panels_all",
+    modality: "rgb" | "thermal" = "rgb",
+  ) => req<GeoJsonFc>(`/api/detection/geojson/${name}?modality=${modality}`),
+  panelSelection: (body: {
+    modality: "rgb" | "thermal";
+    include_ids?: string[];
+    exclude_ids?: string[];
+    set_fate?: { fate: string; include: boolean };
+    reset_defaults?: boolean;
+  }) =>
+    req<{
+      ok: boolean;
+      modality: string;
+      total: number;
+      included: number;
+      by_fate: Record<string, { total: number; included: number }>;
+    }>("/api/detection/panel-selection", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
   clearDetection: (modality?: "rgb" | "thermal") =>
     req<{ message: string }>(
       modality ? `/api/detection/clear?modality=${modality}` : "/api/detection/clear",

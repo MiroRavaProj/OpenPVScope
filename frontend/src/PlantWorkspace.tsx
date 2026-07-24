@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PipelineStep, ProjectPayload } from "./api";
 import { DetectModality, DetectionTools } from "./DetectionTools";
 import { LayerDock, Basemap } from "./LayerDock";
+import { PanelReviewDock } from "./PanelReviewDock";
 import { PlantMap } from "./PlantMap";
 import { SegmentationTools, SegColorState } from "./SegmentationTools";
 import { PanelInspector } from "./segmentation/PanelInspector";
 import { colorizePairsGeojson } from "./segmentation/thermalColor";
+import { defaultVisibleFates, type PanelFate } from "./panelFates";
 import { useMinimized } from "./ui/useMinimized";
 import { useT } from "./i18n";
 
@@ -33,6 +35,7 @@ export function PlantWorkspace(props: {
   const [rgbOpacity, setRgbOpacity] = useState(thermalOnly ? 0 : 1);
   const [thermalOpacity, setThermalOpacity] = useState(thermalOnly ? 1 : 0);
   const [basemap, setBasemap] = useState<Basemap>("satellite");
+  const [visibleFates, setVisibleFates] = useState<Record<PanelFate, boolean>>(defaultVisibleFates);
   const fitBoundsRef = useRef<(() => void) | null>(null);
   const [inspMin, setInspMin] = useMinimized("seg-inspector", false);
   const [segColor, setSegColor] = useState<SegColorState>({
@@ -110,6 +113,8 @@ export function PlantWorkspace(props: {
         onRgbOpacityChange={setRgbOpacity}
         onThermalOpacityChange={setThermalOpacity}
         fitBoundsRef={fitBoundsRef}
+        visibleFates={props.step === "detection" ? visibleFates : undefined}
+        onPanelIncludeToggled={bumpMap}
       />
 
       <aside className="process-dock" aria-label={t("app.processDock")}>
@@ -162,6 +167,17 @@ export function PlantWorkspace(props: {
           hideRgb={thermalOnly}
         />
       </aside>
+
+      {props.step === "detection" && (
+        <PanelReviewDock
+          modality={modality}
+          refreshKey={refreshKey}
+          visibleFates={visibleFates}
+          onVisibleFatesChange={setVisibleFates}
+          onSelectionChanged={bumpMap}
+          onError={props.onError}
+        />
+      )}
 
       {props.step === "segmentation" && selectedId && (
         <PanelInspector

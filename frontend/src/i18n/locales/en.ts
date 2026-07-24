@@ -248,6 +248,18 @@ export const en: Dict = {
     confThermal: "Thermal match confidence",
     confThermalTitle:
       "Thermal match threshold (0–1). Higher = fewer thermal boxes; lower = more detections (thermal scores often run lower than RGB). Default 0.5.",
+    thermalMatchModeAria: "Thermal matching mode",
+    thermalMatchModeTitle:
+      "How thermal templates are matched. Compare modes on the same grid; RGB is unchanged. Default stays the classic matcher.",
+    thermalMatchModeHint: "Thermal matcher (compare modes, then re-run detect)",
+    thermalMatchDefault: "Default",
+    thermalMatchDefaultTitle: "Classic grayscale template match on temperature (current behavior).",
+    thermalMatchContext: "+15% context",
+    thermalMatchContextTitle:
+      "Match with templates expanded 15% on each side (includes borders/gaps), then report boxes at exact panel size.",
+    thermalMatchGradient: "Gradient",
+    thermalMatchGradientTitle:
+      "Match on Sobel edge magnitude instead of raw °C — favors panel borders over flat grass.",
     nms: "NMS IoU (default 0.05)",
     nmsTitle:
       "NMS overlap IoU. Suppress when overlap exceeds this. Higher = keep more nearby boxes; lower = suppress more aggressively. Default 0.05.",
@@ -261,10 +273,29 @@ export const en: Dict = {
       "Thermal only: clamp search-image temperatures above this °C. Higher = keep hotter pixels; lower = suppress hot outliers more. Default 45°C.",
     advancedValidation: "Advanced validation (refine)",
     advancedValidationTitle:
-      "Post-NMS fine-tuning: DBSCAN grid fit → border prune → Conway fill. On = cleaner regular arrays; off = raw matcher output only.",
-    fineTune: "Fine-tune confidence",
+      "Post-NMS fine-tuning: DBSCAN + lattice walk → border prune → Conway fill. On = cleaner regular arrays; off = raw matcher output only.",
+    advancedBlockHint: "Refine settings (applied when Advanced validation is on).",
+    minCluster: "Min cluster size",
+    minClusterTitle:
+      "After DBSCAN, drop clusters with fewer than this many panels (e.g. small FP islands). Does NOT set DBSCAN density — use “DBSCAN min samples” for that. Default 12.",
+    dbscanMin: "DBSCAN min samples",
+    dbscanMinTitle:
+      "DBSCAN core-point density (points within one pitch, including self). Panel lattices only have ~4 neighbors, so keep this low (3–5). Setting this to 12 marks almost everything as noise. Default 4.",
+    fineTune: "Fine-tune / fill gate confidence",
     fineTuneTitle:
-      "Refine confidence gate. Higher = keep only strong peaks (stricter prune); lower = keep more weak / off-grid detections. Default 0.65.",
+      "Used for soft outlier keep (if enabled) and for Conway fill when a hole has only 2 neighbors. Higher = stricter. Default 0.65.",
+    walkTol: "Walk / border tol ({{pct}}% of max side)",
+    walkTolTitle:
+      "Acceptance radius for lattice walk, border neighbors, and fill holes — fraction of the largest panel/pitch side. Higher = more tolerant of warp; lower = stricter. Default 10%.",
+    pitchSlack: "Pitch slack ±{{pct}}%",
+    pitchSlackTitle:
+      "How much local pitch may differ from the global ortho pitch. Higher = adapt more per cluster; lower = force global pitch. Default ±5%.",
+    fillConf: "Fill confidence (synth panels)",
+    fillConfTitle:
+      "Confidence assigned to Conway-synthesized panels. Does not change restore-from-detection. Default 0.5.",
+    keepHighConfOutliers: "Keep high-conf outliers (legacy soft)",
+    keepHighConfOutliersTitle:
+      "Off (recommended): drop DBSCAN noise, walk rejects, and dangling borders by geometry only. On: legacy soft mode keeps rejects with confidence ≥ fine-tune threshold.",
     mapFilterRgb: "Map filter RGB ≥ {{value}}",
     mapFilterRgbTitle:
       "Map-only filter for blue (RGB) boxes — does not re-run detection. Higher = hide weaker RGB boxes; lower = show more. Default 0.7.",
@@ -349,6 +380,27 @@ export const en: Dict = {
     fitBounds: "Fit bounds",
     fitBoundsTitle: "Zoom the map to fit the orthomosaic bounds.",
   },
+  review: {
+    title: "Panel review",
+    expand: "Expand panel review",
+    minimize: "Minimize panel review",
+    hint: "Colors = refine fate. Eye = map visibility. Checkbox = keep for segmentation. Click a panel to flip include.",
+    selected: "For segmentation: {{n}} / {{total}}",
+    toggleVisible: "Show / hide on map",
+    toggleInclude: "Include all of this fate for segmentation",
+    reset: "Reset to pipeline defaults",
+    fate: {
+      kept: "Kept (grid)",
+      filled_restored: "Filled (restored)",
+      filled_synth: "Filled (synth)",
+      readded: "Re-added (high conf)",
+      dbscan_noise: "DBSCAN noise",
+      tiny_cluster: "Tiny cluster",
+      walk_reject: "Walk reject",
+      no_fit: "No lattice fit",
+      border_prune: "Border prune",
+    },
+  },
   map: {
     drawHint:
       "Click 4 corners of the panel block ({{count}}/4) — saves on the 4th click ({{modality}})",
@@ -363,6 +415,7 @@ export const en: Dict = {
     tipPixels: "Pixels: {{n}}",
     tipClickImages: "Click to view images",
     tipModality: "Modality: {{modality}}",
+    tipCluster: "Cluster: {{id}}",
     tipConfidence: "Confidence: {{value}}",
     layersFailed: "Map layers failed: {{error}}",
     streets: "Streets",
