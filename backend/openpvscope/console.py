@@ -96,6 +96,7 @@ class ConsoleBus:
         detail: str | None = None,
         step: str | None = None,
         level: Level = "verbose",
+        log_entry: bool = True,
     ) -> None:
         with self._lock:
             if self._job is None or self._job.status != "running":
@@ -104,18 +105,23 @@ class ConsoleBus:
                 self._job.progress = max(0.0, min(100.0, float(progress)))
             if detail is not None:
                 self._job.detail = detail
-            if detail or step:
-                self._seq += 1
-                self._entries.append(
-                    ConsoleEntry(
-                        seq=self._seq,
-                        ts=time.time(),
-                        level=level,
-                        message=detail or step or "",
-                        step=step,
-                        job_id=self._job.id,
-                    )
+            if not log_entry or not (detail or step):
+                return
+            msg = detail or step or ""
+            # Skip duplicate consecutive lines (poll races / double callbacks)
+            if self._entries and self._entries[-1].message == msg and self._entries[-1].job_id == self._job.id:
+                return
+            self._seq += 1
+            self._entries.append(
+                ConsoleEntry(
+                    seq=self._seq,
+                    ts=time.time(),
+                    level=level,
+                    message=msg,
+                    step=step,
+                    job_id=self._job.id,
                 )
+            )
 
     def end_job(self, *, ok: bool = True, message: str | None = None) -> None:
         with self._lock:

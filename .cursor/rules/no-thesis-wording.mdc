@@ -1,0 +1,16 @@
+---
+description: Never use "thesis" in product UI, logs, or client-facing copy
+alwaysApply: true
+---
+
+# No "thesis" wording
+
+OpenPVScope is a product. Do **not** refer to a thesis in:
+
+- UI copy, tooltips, labels, console/activity logs
+- User-visible API messages, `pipeline_rev`, health payloads shown to operators
+- Comments or docstrings that ship in product code (prefer "legacy suite", "previous app", or "old code")
+
+When comparing behavior, say **old code** / **legacy suite**, not thesis.
+
+Internal planning or private notes may mention academic origin only if the user asks; never put that language into the product surface.

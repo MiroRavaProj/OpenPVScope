@@ -11,7 +11,12 @@ from openpvscope.detection.grid import build_grid_cells, regularize_quad
 from openpvscope.detection.pipeline import generate_grid, save_aoi_geojson
 from openpvscope.detection.template_match import nms
 from openpvscope.geo.crs import feature_collection, polygon_feature
-from openpvscope.segmentation.pairing import pair_panels_self
+from openpvscope.segmentation.pairing import (
+    distance_meters,
+    iou_from_centers,
+    pair_panels_self,
+    pair_rgb_thermal_panels,
+)
 
 
 def test_regularize_quad_keeps_side() -> None:
@@ -51,6 +56,60 @@ def test_pair_panels_self() -> None:
     assert len(pairs) == 2
     assert {p["id"] for p in pairs} == {"a", "b"}
     assert pairs[0]["iou"] == 1.0
+
+
+def test_pair_rgb_thermal_geographic() -> None:
+    # ~1 m panels near 45°N; thermal slightly offset but within radius
+    rgb = feature_collection(
+        [
+            polygon_feature(
+                [[12.0, 45.0], [12.00002, 45.0], [12.00002, 45.00002], [12.0, 45.00002]],
+                {"confidence": 0.9, "id": "rgb1"},
+                fid="rgb1",
+            ),
+            polygon_feature(
+                [[12.001, 45.0], [12.00102, 45.0], [12.00102, 45.00002], [12.001, 45.00002]],
+                {"confidence": 0.85, "id": "rgb2"},
+                fid="rgb2",
+            ),
+        ]
+    )
+    th = feature_collection(
+        [
+            polygon_feature(
+                [
+                    [12.000005, 45.000005],
+                    [12.000025, 45.000005],
+                    [12.000025, 45.000025],
+                    [12.000005, 45.000025],
+                ],
+                {"confidence": 0.8, "id": "th1"},
+                fid="th1",
+            ),
+            polygon_feature(
+                [
+                    [12.001005, 45.000005],
+                    [12.001025, 45.000005],
+                    [12.001025, 45.000025],
+                    [12.001005, 45.000025],
+                ],
+                {"confidence": 0.75, "id": "th2"},
+                fid="th2",
+            ),
+        ]
+    )
+    pairs = pair_rgb_thermal_panels(rgb, th, search_radius_m=8.0, min_iou=0.05)
+    assert len(pairs) == 2
+    assert {p["rgb_id"] for p in pairs} == {"rgb1", "rgb2"}
+    assert {p["thermal_id"] for p in pairs} == {"th1", "th2"}
+    assert all(p["thermal_ring"] for p in pairs)
+    assert all(p["iou"] >= 0.05 for p in pairs)
+
+
+def test_iou_and_distance_helpers() -> None:
+    assert iou_from_centers(12.0, 45.0, 12.0, 45.0) == pytest.approx(1.0)
+    assert distance_meters(12.0, 45.0, 12.0, 45.0) == pytest.approx(0.0)
+    assert distance_meters(12.0, 45.0, 12.0001, 45.0) > 5.0
 
 
 def test_aoi_grid_geojson_roundtrip(tmp_path: Path) -> None:
@@ -100,6 +159,19 @@ def test_deskew_angle_sign() -> None:
     ring = [[0.0, 0.0], [0.01, 0.001], [0.009, 0.005], [-0.001, 0.004]]
     angle = aoi_deskew_angle_deg(ring)
     assert abs(angle) < 45.0
+
+
+def test_deskew_prefers_pixel_longest_side() -> None:
+    """With a non-square pixel size, geo-degree longest side can disagree; affine wins."""
+    from rasterio.transform import from_origin
+
+    from openpvscope.detection.deskew import aoi_deskew_angle_deg
+
+    # 1m x 10m pixels — vertical geo side can be short in degrees but long in pixels
+    affine = from_origin(12.0, 42.01, 0.00001, 0.0001)
+    ring = [[12.0, 42.0], [12.001, 42.0], [12.001, 42.002], [12.0, 42.002]]
+    angle = aoi_deskew_angle_deg(ring, affine=affine)
+    assert isinstance(angle, float)
 
 
 def test_oriented_quads_from_seed() -> None:

@@ -15,6 +15,9 @@ export interface PlantMapProps {
   editCorners: boolean;
   modality: DetectModality;
   showPanels: DetectRunMode;
+  /** Map-only filters (legacy suite defaults: 0.7 each). */
+  displayConfidenceRgb?: number;
+  displayConfidenceThermal?: number;
   refreshKey: number;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
@@ -72,12 +75,30 @@ function openRingFromAoi(fc: GeoJsonFc): number[][] | null {
   return ring.slice(0, 4).map((p) => [Number(p[0]), Number(p[1])]);
 }
 
-function mergePanels(rgb: GeoJsonFc, thermal: GeoJsonFc, mode: DetectRunMode): GeoJsonFc {
-  if (mode === "rgb") return rgb;
-  if (mode === "thermal") return thermal;
+function mergePanels(
+  rgb: GeoJsonFc,
+  thermal: GeoJsonFc,
+  mode: DetectRunMode,
+  minConfidenceRgb: number,
+  minConfidenceThermal: number,
+): GeoJsonFc {
+  const filterFeats = (fc: GeoJsonFc, minConfidence: number) =>
+    (fc.features || []).filter((f) => {
+      const c = Number(f.properties?.confidence ?? 0);
+      return minConfidence <= 0 || c >= minConfidence;
+    });
+  if (mode === "rgb") {
+    return { type: "FeatureCollection", features: filterFeats(rgb, minConfidenceRgb) };
+  }
+  if (mode === "thermal") {
+    return { type: "FeatureCollection", features: filterFeats(thermal, minConfidenceThermal) };
+  }
   return {
     type: "FeatureCollection",
-    features: [...(rgb.features || []), ...(thermal.features || [])],
+    features: [
+      ...filterFeats(rgb, minConfidenceRgb),
+      ...filterFeats(thermal, minConfidenceThermal),
+    ],
   };
 }
 
@@ -178,6 +199,8 @@ export function PlantMap(props: PlantMapProps) {
   const loadVectors = useCallback(async (map: Map) => {
     const modality = propsRef.current.modality;
     const showPanels = propsRef.current.showPanels;
+    const minConfRgb = propsRef.current.displayConfidenceRgb ?? 0;
+    const minConfThermal = propsRef.current.displayConfidenceThermal ?? 0;
     try {
       const [aoi, grid, panelsRgb, panelsTh, pairs] = await Promise.all([
         api.detectionGeojson("aoi", modality),
@@ -188,7 +211,11 @@ export function PlantMap(props: PlantMapProps) {
       ]);
       setGeoJson(map, "aoi", aoi);
       setGeoJson(map, "grid", grid);
-      setGeoJson(map, "panels", mergePanels(panelsRgb, panelsTh, showPanels));
+      setGeoJson(
+        map,
+        "panels",
+        mergePanels(panelsRgb, panelsTh, showPanels, minConfRgb, minConfThermal),
+      );
       setGeoJson(map, "pairs", pairs);
       return aoi;
     } catch (e) {
@@ -501,7 +528,7 @@ export function PlantMap(props: PlantMapProps) {
         await syncEditMarkers(map);
       }
     })();
-  }, [props.refreshKey, props.modality, props.showPanels, loadVectors, mapReady, syncEditMarkers]);
+  }, [props.refreshKey, props.modality, props.showPanels, props.displayConfidenceRgb, props.displayConfidenceThermal, loadVectors, mapReady, syncEditMarkers]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -580,7 +607,10 @@ export function PlantMap(props: PlantMapProps) {
             Satellite
           </button>
         </div>
-        <label className="layer-row">
+        <label
+          className="layer-row"
+          title="RGB orthomosaic opacity. Detected RGB panels are drawn in blue."
+        >
           <span>RGB {Math.round(rgbOpacity * 100)}%</span>
           <input
             type="range"
@@ -591,7 +621,10 @@ export function PlantMap(props: PlantMapProps) {
             onChange={(e) => setRgbOpacity(Number(e.target.value))}
           />
         </label>
-        <label className="layer-row">
+        <label
+          className="layer-row"
+          title="Thermal orthomosaic opacity. Detected thermal panels are drawn in orange/red."
+        >
           <span>Thermal {Math.round(thermalOpacity * 100)}%</span>
           <input
             type="range"

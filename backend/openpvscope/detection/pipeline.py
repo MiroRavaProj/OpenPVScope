@@ -1,4 +1,4 @@
-"""Detection pipeline: per-modality AOI/grid + deskewed template matching → oriented panels."""
+"""Detection pipeline: full-ortho deskew + multi-template match (legacy suite behavior)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,6 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 import rasterio
-from rasterio.enums import Resampling
-from rasterio.transform import Affine
-from rasterio.windows import from_bounds, transform as window_transform
 from pyproj import Transformer
 
 from openpvscope.detection.deskew import (
@@ -21,10 +18,10 @@ from openpvscope.detection.deskew import (
     apply_m,
     invert_m,
     oriented_quads_from_seed,
-    warp_rgb,
+    warp_image,
 )
 from openpvscope.detection.grid import build_grid_cells, regularize_quad
-from openpvscope.detection.template_match import extract_patch_rgb, match_templates
+from openpvscope.detection.template_match import _Heartbeat, extract_patch, match_templates
 from openpvscope.geo.crs import (
     feature_collection,
     polygon_feature,
@@ -35,13 +32,17 @@ from openpvscope.io_atomic import atomic_write_json
 from openpvscope.project.paths import ortho_rgb, ortho_thermal_aligned
 
 ProgressCb = Callable[[float | None, str], None]
-LogCb = Callable[[str, str], None]  # (level, message) level: info|verbose
+# Extended: optional level kw via a thin wrapper in jobs — pipeline uses prog/vlog
+LogCb = Callable[[str, str], None]
 Modality = Literal["rgb", "thermal"]
 
-# Thesis pipeline defaults
+# Legacy suite defaults (template_matching_threshold / nms / display filter)
 DEFAULT_CONFIDENCE = 0.5
 DEFAULT_NMS_IOU = 0.05
-DEFAULT_NUM_TEMPLATES = 1
+DEFAULT_NUM_TEMPLATES = 0  # 0 => all grid cells
+DEFAULT_THERMAL_TEMP_CAP = 45.0  # °C
+DEFAULT_DISPLAY_CONFIDENCE = 0.7  # map visualization filter only
+PIPELINE_REV = "detect-v10"
 
 
 def detection_dir(root: Path, modality: Modality = "rgb") -> Path:
@@ -77,7 +78,6 @@ def save_aoi_geojson(
     modality: Modality = "rgb",
     regenerate_grid: bool = False,
 ) -> Path:
-    """ring_lonlat: [[lon,lat], ...] exactly 4 corners."""
     pts = [(float(p[0]), float(p[1])) for p in ring_lonlat[:4]]
     if len(pts) != 4:
         raise ValueError("AOI needs 4 corners")
@@ -127,7 +127,6 @@ def generate_grid(
 
 
 def copy_rgb_grid_to_thermal(root: Path) -> dict[str, Any]:
-    """Copy RGB AOI + grid artifacts into detection/thermal/."""
     root = Path(root)
     src = detection_dir(root, "rgb")
     dst = detection_dir(root, "thermal")
@@ -155,22 +154,11 @@ def _lonlat_to_xy(lon: float, lat: float, transformer_from_wgs84) -> tuple[float
     return float(x), float(y)
 
 
-def _to_uint8_rgb(arr: np.ndarray, *, thermal: bool, dtype_in) -> np.ndarray:
-    """Match old suite: uint8 RGB kept as-is; else min-max; thermal min-max on valid temps."""
-    if thermal or arr.shape[0] == 1:
-        band = arr[0].astype(np.float32)
-        valid = np.isfinite(band) & (band > -100)
-        out = np.zeros(band.shape, dtype=np.uint8)
-        if np.any(valid):
-            lo = float(np.min(band[valid]))
-            hi = float(np.max(band[valid]))
-            if hi > lo:
-                scaled = (band - lo) / (hi - lo) * 255.0
-                out = np.where(valid, np.clip(scaled, 0, 255).astype(np.uint8), 0)
-        return np.stack([out, out, out], axis=-1)
-
-    rgb = np.transpose(arr[:3], (1, 2, 0))
-    if dtype_in == np.uint8 or str(dtype_in) == "uint8":
+def _load_rgb_uint8(ds: rasterio.DatasetReader) -> np.ndarray:
+    """HxWx3 RGB uint8 — keep uint8 as-is, else min-max."""
+    data = ds.read([1, 2, 3])
+    rgb = np.transpose(data[:3], (1, 2, 0))
+    if ds.dtypes[0] == "uint8" or np.dtype(ds.dtypes[0]) == np.uint8:
         return np.ascontiguousarray(rgb[:, :, :3])
     rgb_f = rgb.astype(np.float32)
     lo = float(np.min(rgb_f))
@@ -180,6 +168,31 @@ def _to_uint8_rgb(arr: np.ndarray, *, thermal: bool, dtype_in) -> np.ndarray:
     return np.zeros_like(rgb_f, dtype=np.uint8)
 
 
+def _load_thermal_uint8(
+    ds: rasterio.DatasetReader,
+    *,
+    thermal_temp_cap: float | None,
+) -> np.ndarray:
+    """
+    HxW uint8 — IR path: mask < -100°C, optional cap, min-max valid → uint8.
+    """
+    band = ds.read(1).astype(np.float32)
+    nodata_mask = ~np.isfinite(band) | (band < -100)
+    capped = band.copy()
+    if thermal_temp_cap is not None:
+        high = capped > float(thermal_temp_cap)
+        capped[high & ~nodata_mask] = float(thermal_temp_cap)
+    valid = ~nodata_mask
+    out = np.zeros(band.shape, dtype=np.uint8)
+    if np.any(valid):
+        lo = float(np.min(capped[valid]))
+        hi = float(np.max(capped[valid]))
+        if hi > lo:
+            scaled = (capped[valid] - lo) / (hi - lo) * 255.0
+            out[valid] = np.clip(scaled, 0, 255).astype(np.uint8)
+    return out
+
+
 def run_detection(
     root: Path,
     *,
@@ -187,6 +200,7 @@ def run_detection(
     confidence: float = DEFAULT_CONFIDENCE,
     nms_iou: float = DEFAULT_NMS_IOU,
     num_templates: int = DEFAULT_NUM_TEMPLATES,
+    thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
     progress: ProgressCb | None = None,
     log: LogCb | None = None,
 ) -> dict[str, Any]:
@@ -194,9 +208,13 @@ def run_detection(
     ortho = _ortho_for(root, modality)
     det_dir = detection_dir(root, modality)
 
-    def prog(p: float | None, msg: str) -> None:
+    def prog(p: float | None, msg: str, *, level: str = "info") -> None:
         if progress:
-            progress(p, msg)
+            # jobs wrapper accepts (p, msg); level forwarded via attribute if present
+            try:
+                progress(p, msg, level=level)  # type: ignore[call-arg]
+            except TypeError:
+                progress(p, msg)
 
     def vlog(msg: str) -> None:
         if log:
@@ -215,11 +233,9 @@ def run_detection(
         raise FileNotFoundError(f"{modality}: AOI and grid required — generate grid first")
 
     ring_wgs = aoi["ring"]
-    angle = aoi_deskew_angle_deg(ring_wgs)
     grid_feats = grid_fc.get("features") or []
-    vlog(f"[{modality}] AOI corners={len(ring_wgs)} grid_cells={len(grid_feats)} deskew={angle:.3f}°")
-    vlog(f"[{modality}] params confidence={confidence} nms_iou={nms_iou} num_templates={num_templates}")
-    prog(12, f"Deskew {angle:.2f}° — reading AOI at native resolution")
+    if not grid_feats:
+        raise RuntimeError("Grid has no cells")
 
     features: list[dict] = []
     out = det_dir / "panels.geojson"
@@ -230,74 +246,72 @@ def run_detection(
         if to_wgs is not None:
             from_wgs = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
 
-        xs, ys = [], []
-        for lon, lat in ring_wgs:
-            x, y = _lonlat_to_xy(float(lon), float(lat), from_wgs)
-            xs.append(x)
-            ys.append(y)
-        west, east = min(xs), max(xs)
-        south, north = min(ys), max(ys)
-        # Pad so rotation does not clip the AOI
-        pad_x = (east - west) * 0.12 + abs(ds.transform.a) * 8
-        pad_y = (north - south) * 0.12 + abs(ds.transform.e) * 8
-        west -= pad_x
-        east += pad_x
-        south -= pad_y
-        north += pad_y
-
-        window = from_bounds(west, south, east, north, transform=ds.transform)
-        # Native resolution — do not downsample (old suite matched on full-res raster)
-        out_w = max(1, int(round(window.width)))
-        out_h = max(1, int(round(window.height)))
+        original_affine = ds.transform
+        # Pixel-space longest side (legacy suite)
+        angle = aoi_deskew_angle_deg(ring_wgs, affine=original_affine)
+        vlog(f"[{modality}] AOI corners=4 grid_cells={len(grid_feats)} deskew={angle:.3f}° (pixel-space)")
         vlog(
-            f"[{modality}] ortho={ds.width}x{ds.height} bands={ds.count} dtype={ds.dtypes[0]} "
-            f"AOI window={out_w}x{out_h} px"
+            f"[{modality}] params confidence={confidence} nms_iou={nms_iou} "
+            f"num_templates={'ALL' if num_templates <= 0 else num_templates} "
+            f"thermal_cap={thermal_temp_cap}"
         )
+        prog(12, f"Deskew {angle:.2f}° — reading FULL orthomosaic")
 
-        if modality == "thermal" or ds.count < 3:
-            g = ds.read(
-                1,
-                window=window,
-                out_shape=(out_h, out_w),
-                resampling=Resampling.bilinear,
-                boundless=True,
-                fill_value=np.nan,
-            )
-            data = np.stack([g], axis=0)
-            image = _to_uint8_rgb(data, thermal=True, dtype_in=ds.dtypes[0])
-            use_color = False
-        else:
-            data = ds.read(
-                [1, 2, 3],
-                window=window,
-                out_shape=(3, out_h, out_w),
-                resampling=Resampling.bilinear,
-                boundless=True,
-                fill_value=0,
-            )
-            image = _to_uint8_rgb(data, thermal=False, dtype_in=ds.dtypes[0])
-            use_color = True
+        out_w, out_h = int(ds.width), int(ds.height)
+        vlog(f"[{modality}] ortho={out_w}x{out_h} bands={ds.count} dtype={ds.dtypes[0]} search=FULL_ORTHO")
 
-        win_transform = window_transform(window, ds.transform)
-        pix_transform = win_transform * Affine.scale(window.width / out_w, window.height / out_h)
+        load_label = f"[{modality}] reading FULL orthomosaic ({out_w}x{out_h})"
+        with _Heartbeat(
+            (lambda p, m: prog(p, m, level="verbose")) if progress else None,
+            18.0,
+            load_label,
+            interval_s=2.0,
+        ):
+            if modality == "thermal" or ds.count < 3:
+                image = _load_thermal_uint8(ds, thermal_temp_cap=thermal_temp_cap)
+                use_color = False
+            else:
+                image = _load_rgb_uint8(ds)
+                use_color = True
+        vlog(f"[{modality}] ortho loaded shape={image.shape} color={use_color}")
 
         def crs_to_pixel(x: float, y: float) -> tuple[float, float]:
-            inv = ~pix_transform
+            inv = ~original_affine
             c, r = inv * (x, y)
             return float(c), float(r)
 
         def pixel_to_crs(c: float, r: float) -> tuple[float, float]:
-            return pix_transform * (c, r)
+            return original_affine * (c, r)
 
-        prog(28, "Warping AOI window (deskew)")
-        rotated, m_rot = warp_rgb(image, angle)
+        prog(28, "Warping FULL orthomosaic (deskew)")
+        warp_label = f"[{modality}] warpAffine deskew {angle:.2f}°"
+        with _Heartbeat(
+            (lambda p, m: prog(p, m, level="verbose")) if progress else None,
+            32.0,
+            warp_label,
+            interval_s=2.0,
+        ):
+            rotated, m_rot = warp_image(image, angle)
         m_inv = invert_m(m_rot)
-        vlog(f"[{modality}] search image after deskew: {rotated.shape[1]}x{rotated.shape[0]}")
+        vlog(f"[{modality}] search after deskew: {rotated.shape[1]}x{rotated.shape[0]} ndim={rotated.ndim}")
+        del image
 
-        prog(40, "Building templates from grid cells")
+        prog(40, "Building templates from ALL grid cells" if num_templates <= 0 else "Building templates from grid")
+        if num_templates <= 0:
+            feats_for_tpl = grid_feats
+        else:
+            feats_for_tpl = grid_feats[: max(1, min(int(num_templates), len(grid_feats)))]
+
         templates: list[np.ndarray] = []
-        n_tpl = max(1, min(int(num_templates), len(grid_feats) or 1))
-        for feat in grid_feats[:n_tpl]:
+        n_feats = len(feats_for_tpl)
+        for fi, feat in enumerate(feats_for_tpl):
+            if fi % 5 == 0 or fi + 1 == n_feats:
+                prog(
+                    40.0 + (fi / max(n_feats, 1)) * 14.0,
+                    f"extract template {fi + 1}/{n_feats}",
+                    level="verbose",
+                )
+                vlog(f"[{modality}] extract template {fi + 1}/{n_feats}")
             coords = feat["geometry"]["coordinates"][0]
             corners_rot = []
             for p in coords[:4]:
@@ -307,7 +321,7 @@ def run_detection(
                 corners_rot.append((rx, ry))
             xs_t = [c[0] for c in corners_rot]
             ys_t = [c[1] for c in corners_rot]
-            patch = extract_patch_rgb(
+            patch = extract_patch(
                 rotated,
                 int(math.floor(min(xs_t))),
                 int(math.floor(min(ys_t))),
@@ -316,27 +330,32 @@ def run_detection(
             )
             if patch is not None and patch.shape[0] >= 4 and patch.shape[1] >= 4:
                 templates.append(patch)
-                vlog(f"[{modality}] template[{len(templates)-1}] size={patch.shape[1]}x{patch.shape[0]}")
         if not templates:
             raise RuntimeError(f"Could not extract a template from the {modality} grid")
+        vlog(f"[{modality}] templates={len(templates)} (from {len(feats_for_tpl)} cells)")
+        ilog(f"[{modality}] using {len(templates)} templates")
 
-        prog(55, f"Template matching ({len(templates)} tpl, color={use_color})")
+        prog(55, f"Multi-template matching ({len(templates)} tpl, color={use_color})")
+
+        def match_prog(local_pct: float, msg: str) -> None:
+            # Map matching phase into 55–82% of this modality's progress
+            mapped = 55.0 + (local_pct / 100.0) * 27.0
+            prog(mapped, msg, level="verbose")
+            vlog(f"[{modality}] {msg}")
+
         all_dets, raw_peaks = match_templates(
             rotated,
             templates,
             threshold=confidence,
             nms_iou=nms_iou,
             use_color=use_color,
+            progress=match_prog,
         )
-        vlog(f"[{modality}] raw peaks above threshold: {raw_peaks}")
-        vlog(f"[{modality}] detections after NMS: {len(all_dets)}")
+        prog(82, f"{len(all_dets)} panels after NMS (from {raw_peaks} peaks)")
+        vlog(f"[{modality}] raw peaks: {raw_peaks} → after NMS: {len(all_dets)}")
         ilog(f"[{modality}] {len(all_dets)} panels after NMS (from {raw_peaks} peaks)")
 
-        seed_feat = grid_feats[0] if grid_feats else None
-        if not seed_feat:
-            raise RuntimeError("Grid has no cells")
-        seed_ring = [[float(p[0]), float(p[1])] for p in seed_feat["geometry"]["coordinates"][0][:4]]
-
+        seed_ring = [[float(p[0]), float(p[1])] for p in grid_feats[0]["geometry"]["coordinates"][0][:4]]
         centers: list[tuple[float, float]] = []
         confidences: list[float] = []
         for det in all_dets:
@@ -348,7 +367,7 @@ def run_detection(
             centers.append((float(lonlat[0]), float(lonlat[1])))
             confidences.append(float(det["confidence"]))
 
-        prog(85, f"Writing {len(centers)} oriented panels")
+        prog(85, f"Writing {len(centers)} oriented panels [{PIPELINE_REV}]")
         quads = oriented_quads_from_seed(seed_ring, centers)
         for ring_ll, conf in zip(quads, confidences):
             pid = uuid.uuid4().hex[:12]
@@ -365,8 +384,7 @@ def run_detection(
                 )
             )
 
-        fc = feature_collection(features, name="panels")
-        atomic_write_json(out, fc)
+        atomic_write_json(out, feature_collection(features, name="panels"))
         atomic_write_json(
             det_dir / "detection_meta.json",
             {
@@ -374,16 +392,20 @@ def run_detection(
                 "confidence": confidence,
                 "nms_iou": nms_iou,
                 "templates_used": len(templates),
+                "num_templates_request": num_templates,
                 "deskew_angle_deg": angle,
                 "modality": modality,
+                "search_mode": "full_ortho",
+                "thermal_temp_cap": thermal_temp_cap if modality == "thermal" else None,
                 "search_size": [int(rotated.shape[1]), int(rotated.shape[0])],
-                "window_size": [out_w, out_h],
+                "ortho_size": [out_w, out_h],
+                "pipeline_rev": PIPELINE_REV,
             },
         )
         vlog(f"[{modality}] wrote {out}")
 
-    prog(100, f"{modality} detection complete — {len(features)} panels")
-    return {"count": len(features), "path": str(out), "modality": modality}
+    prog(100, f"{modality} detection complete — {len(features)} panels [{PIPELINE_REV}]")
+    return {"count": len(features), "path": str(out), "modality": modality, "pipeline_rev": PIPELINE_REV}
 
 
 def _modality_status(root: Path, modality: Modality) -> dict[str, Any]:
@@ -432,12 +454,18 @@ def detection_status(project_root: Path) -> dict[str, Any]:
         "rgb": rgb,
         "thermal": th,
         "both_grids_ready": bool(rgb["has_grid"] and th["has_grid"]),
+        "defaults": {
+            "confidence": DEFAULT_CONFIDENCE,
+            "nms_iou": DEFAULT_NMS_IOU,
+            "num_templates": DEFAULT_NUM_TEMPLATES,
+            "thermal_temp_cap": DEFAULT_THERMAL_TEMP_CAP,
+            "display_confidence": DEFAULT_DISPLAY_CONFIDENCE,
+        },
     }
 
 
 def load_geojson(root: Path, name: str, modality: Modality = "rgb") -> dict | None:
-    path = detection_dir(root, modality) / f"{name}.geojson"
-    return _read_json(path)
+    return _read_json(detection_dir(root, modality) / f"{name}.geojson")
 
 
 def clear_detection(root: Path, modality: Modality | None = None) -> None:

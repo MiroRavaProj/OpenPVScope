@@ -323,11 +323,24 @@ export const api = {
       "/api/detection/grid/copy-to-thermal",
       { method: "POST" },
     ),
-  runDetection: (confidence: number, nms_iou: number) =>
+  runDetection: (opts: {
+    confidence_rgb: number;
+    confidence_thermal: number;
+    nms_iou: number;
+    num_templates?: number;
+    thermal_temp_cap?: number | null;
+  }) =>
     req<{ started: boolean }>("/api/detection/run", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ confidence, nms_iou, modality: "both" }),
+      body: JSON.stringify({
+        confidence_rgb: opts.confidence_rgb,
+        confidence_thermal: opts.confidence_thermal,
+        nms_iou: opts.nms_iou,
+        num_templates: opts.num_templates ?? 0,
+        thermal_temp_cap: opts.thermal_temp_cap ?? 45,
+        modality: "both",
+      }),
     }),
   detectionJob: () =>
     req<{ running: boolean; error: string | null; result: unknown }>("/api/detection/job"),
@@ -352,11 +365,19 @@ export const api = {
       pair_count: number;
       job?: { running: boolean; error: string | null; result: unknown };
     }>("/api/segmentation/status"),
-  runSegmentation: (margin_factor = 0.15) =>
+  runSegmentation: (opts?: {
+    margin_factor?: number;
+    search_radius_m?: number | null;
+    min_iou?: number;
+  }) =>
     req<{ started: boolean }>("/api/segmentation/run", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ margin_factor }),
+      body: JSON.stringify({
+        margin_factor: opts?.margin_factor ?? 0.2,
+        search_radius_m: opts?.search_radius_m ?? null,
+        min_iou: opts?.min_iou ?? 0.1,
+      }),
     }),
   segmentationJob: () =>
     req<{ running: boolean; error: string | null; result: unknown }>("/api/segmentation/job"),

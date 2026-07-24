@@ -1,4 +1,10 @@
-"""Windowed panel crop extraction from RGB + thermal_aligned GeoTIFFs."""
+"""
+Panel crop extraction — RGB ↔ thermal pairing port from legacy suite.
+
+Previews: oriented (deskewed) crops with margin (default 0.2).
+Thermal stats: exact panel rect, full resolution, no margin, values > -100,
+includes variance.
+"""
 
 from __future__ import annotations
 
@@ -7,18 +13,24 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+import cv2
 import numpy as np
 import rasterio
 from PIL import Image
-from rasterio.enums import Resampling
-from rasterio.windows import from_bounds
+from pyproj import Transformer
+from rasterio.windows import Window
 
 from openpvscope.detection.pipeline import load_geojson
 from openpvscope.geo.crs import feature_collection, polygon_feature, transformer_to_wgs84
 from openpvscope.io_atomic import atomic_write_json
 from openpvscope.project.paths import ortho_rgb, ortho_thermal_aligned
-from openpvscope.segmentation.pairing import pair_panels_self
+from openpvscope.segmentation.pairing import (
+    DEFAULT_MIN_IOU,
+    pair_rgb_thermal_panels,
+)
 
+SEGMENTATION_REV = "seg-v2"
+PREVIEW_MAX = 512
 ProgressCb = Callable[[float | None, str], None]
 
 
@@ -36,28 +48,43 @@ def _lonlat_to_xy(lon: float, lat: float, from_wgs) -> tuple[float, float]:
     return float(x), float(y)
 
 
-def _stretch_preview(arr: np.ndarray) -> np.ndarray:
-    """Single band or RGB → HxW uint8 or HxWx3 uint8."""
-    a = arr.astype(np.float32)
-    if a.ndim == 2:
-        valid = np.isfinite(a)
-        if not np.any(valid):
-            return np.zeros_like(a, dtype=np.uint8)
-        lo, hi = np.percentile(a[valid], [2, 98])
-        if hi <= lo:
-            hi = lo + 1
-        return np.clip((a - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
-    # CxHxW
-    bands = []
-    for i in range(min(3, a.shape[0])):
-        bands.append(_stretch_preview(a[i]))
-    while len(bands) < 3:
-        bands.append(bands[0])
-    return np.stack(bands, axis=-1)
+def _ring_pixel_pts(
+    ring: list[list[float]],
+    *,
+    affine,
+    from_wgs,
+) -> np.ndarray:
+    """Panel ring → Nx2 float32 pixel coords (col, row)."""
+    pts: list[list[float]] = []
+    for p in ring:
+        if len(p) < 2:
+            continue
+        lon, lat = float(p[0]), float(p[1])
+        x, y = _lonlat_to_xy(lon, lat, from_wgs)
+        row, col = rasterio.transform.rowcol(affine, x, y)
+        pts.append([float(col), float(row)])
+    if len(pts) > 1 and abs(pts[0][0] - pts[-1][0]) < 1e-6 and abs(pts[0][1] - pts[-1][1]) < 1e-6:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        raise ValueError("Panel ring needs ≥3 vertices")
+    return np.asarray(pts[:4] if len(pts) >= 4 else pts, dtype=np.float32)
 
 
-def _thermal_stats(arr: np.ndarray) -> dict[str, float | None]:
-    valid = arr[np.isfinite(arr)]
+def _order_box_points(pts: np.ndarray) -> np.ndarray:
+    """Order 4 points TL, TR, BR, BL (OpenCV boxPoints → consistent warp)."""
+    # Sum / diff heuristic
+    s = pts.sum(axis=1)
+    d = np.diff(pts, axis=1).reshape(-1)
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    tr = pts[np.argmin(d)]
+    bl = pts[np.argmax(d)]
+    return np.asarray([tl, tr, br, bl], dtype=np.float32)
+
+
+def _thermal_stats(arr: np.ndarray) -> dict[str, float | None | str]:
+    """Legacy: valid = values > -100 (nodata filter)."""
+    valid = arr[np.isfinite(arr) & (arr > -100.0)]
     if valid.size == 0:
         return {
             "min_temperature": None,
@@ -65,6 +92,9 @@ def _thermal_stats(arr: np.ndarray) -> dict[str, float | None]:
             "mean_temperature": None,
             "median_temperature": None,
             "std_temperature": None,
+            "var_temperature": None,
+            "temperature_unit": "Celsius",
+            "valid_pixels": 0,
         }
     return {
         "min_temperature": float(valid.min()),
@@ -72,64 +102,152 @@ def _thermal_stats(arr: np.ndarray) -> dict[str, float | None]:
         "mean_temperature": float(valid.mean()),
         "median_temperature": float(np.median(valid)),
         "std_temperature": float(valid.std()),
+        "var_temperature": float(valid.var()),
         "temperature_unit": "Celsius",
+        "valid_pixels": int(valid.size),
     }
 
 
-def _read_window_rgb(ds, west, south, east, north, out_max: int = 256) -> np.ndarray:
-    window = from_bounds(west, south, east, north, transform=ds.transform)
-    scale = max(window.width / out_max, window.height / out_max, 1.0)
-    out_w = max(1, int(window.width / scale))
-    out_h = max(1, int(window.height / scale))
-    if ds.count >= 3:
-        data = ds.read(
-            [1, 2, 3],
-            window=window,
-            out_shape=(3, out_h, out_w),
-            resampling=Resampling.bilinear,
-            boundless=True,
-            fill_value=0,
-        )
-    else:
-        g = ds.read(
-            1,
-            window=window,
-            out_shape=(out_h, out_w),
-            resampling=Resampling.bilinear,
-            boundless=True,
-            fill_value=0,
-        )
-        data = np.stack([g, g, g], axis=0)
-    return _stretch_preview(data)
+def _stretch_u8(arr: np.ndarray) -> np.ndarray:
+    """HxW float/int → uint8; CxHxW → HxWx3 uint8."""
+    a = arr.astype(np.float32)
+    if a.ndim == 2:
+        valid = np.isfinite(a) & (a > -100.0 if a.dtype == np.float32 else True)
+        # For RGB byte data, use isfinite only
+        if not np.any(np.isfinite(a)):
+            return np.zeros(a.shape, dtype=np.uint8)
+        # Prefer > -100 for thermal-like floats; for RGB use percentiles of all finite
+        mask = np.isfinite(a)
+        if a.max() > 200 or a.min() < -50:
+            mask = mask & (a > -100.0)
+        if not np.any(mask):
+            mask = np.isfinite(a)
+        if not np.any(mask):
+            return np.zeros(a.shape, dtype=np.uint8)
+        lo, hi = np.percentile(a[mask], [2, 98])
+        if hi <= lo:
+            hi = lo + 1.0
+        out = np.zeros(a.shape, dtype=np.uint8)
+        out[mask] = np.clip((a[mask] - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
+        return out
+    # CxHxW
+    bands = [_stretch_u8(a[i]) for i in range(min(3, a.shape[0]))]
+    while len(bands) < 3:
+        bands.append(bands[0])
+    return np.stack(bands, axis=-1)
 
 
-def _read_window_thermal(ds, west, south, east, north, out_max: int = 256) -> tuple[np.ndarray, np.ndarray]:
-    window = from_bounds(west, south, east, north, transform=ds.transform)
-    scale = max(window.width / out_max, window.height / out_max, 1.0)
-    out_w = max(1, int(window.width / scale))
-    out_h = max(1, int(window.height / scale))
+def _downscale_u8(img: np.ndarray, max_side: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    scale = max(h / max_side, w / max_side, 1.0)
+    if scale <= 1.0:
+        return img
+    nw, nh = max(1, int(round(w / scale))), max(1, int(round(h / scale)))
+    return cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+
+
+def crop_oriented_panel(
+    ds,
+    ring_lonlat: list[list[float]],
+    from_wgs,
+    *,
+    margin_factor: float = 0.0,
+    is_rgb: bool = False,
+) -> np.ndarray:
+    """
+    Deskewed panel crop via perspective warp of a local window.
+
+    margin_factor: fraction of panel size added on each side (0 = exact panel).
+    RGB → HxWx3 uint8 (stretched). Thermal → HxW float32 (raw °C).
+    """
+    pts = _ring_pixel_pts(ring_lonlat, affine=ds.transform, from_wgs=from_wgs)
+    rect = cv2.minAreaRect(pts)
+    (cx, cy), (rw, rh), _angle = rect
+    rw = float(max(rw, 1.0))
+    rh = float(max(rh, 1.0))
+    scale = 1.0 + 2.0 * float(margin_factor)
+    out_w = max(1, int(round(rw * scale)))
+    out_h = max(1, int(round(rh * scale)))
+
+    box = _order_box_points(cv2.boxPoints(rect))
+    center = box.mean(axis=0)
+    src_world = center + (box - center) * scale
+
+    min_c = int(np.floor(src_world[:, 0].min())) - 2
+    max_c = int(np.ceil(src_world[:, 0].max())) + 2
+    min_r = int(np.floor(src_world[:, 1].min())) - 2
+    max_r = int(np.ceil(src_world[:, 1].max())) + 2
+    min_c = max(0, min_c)
+    min_r = max(0, min_r)
+    max_c = min(ds.width, max_c)
+    max_r = min(ds.height, max_r)
+    if max_c <= min_c or max_r <= min_r:
+        raise ValueError("Panel window outside raster")
+
+    win_w = max_c - min_c
+    win_h = max_r - min_r
+    window = Window(min_c, min_r, win_w, win_h)
+    src_local = src_world.copy()
+    src_local[:, 0] -= min_c
+    src_local[:, 1] -= min_r
+    dst = np.asarray(
+        [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],
+        dtype=np.float32,
+    )
+    M = cv2.getPerspectiveTransform(src_local.astype(np.float32), dst)
+
+    if is_rgb:
+        if ds.count >= 3:
+            data = ds.read([1, 2, 3], window=window, boundless=True, fill_value=0)
+            # CxHxW → HxWxC for warp
+            patch = np.transpose(data, (1, 2, 0)).astype(np.float32)
+        else:
+            g = ds.read(1, window=window, boundless=True, fill_value=0).astype(np.float32)
+            patch = np.stack([g, g, g], axis=-1)
+        warped = cv2.warpPerspective(
+            patch,
+            M,
+            (out_w, out_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        # stretch per-channel
+        return _stretch_u8(np.transpose(warped, (2, 0, 1)))
+
     raw = ds.read(
         1,
         window=window,
-        out_shape=(out_h, out_w),
-        resampling=Resampling.bilinear,
         boundless=True,
         fill_value=np.nan,
     ).astype(np.float32)
-    preview = _stretch_preview(raw)
-    return raw, preview
+    warped = cv2.warpPerspective(
+        raw,
+        M,
+        (out_w, out_h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=np.nan,
+    )
+    return warped.astype(np.float32)
 
 
 def run_segmentation(
     root: Path,
     *,
-    margin_factor: float = 0.15,
+    margin_factor: float = 0.2,
+    search_radius_m: float | None = None,
+    min_iou: float = DEFAULT_MIN_IOU,
     progress: ProgressCb | None = None,
 ) -> dict[str, Any]:
     root = Path(root)
-    panels = load_geojson(root, "panels")
-    if not panels or not panels.get("features"):
-        raise FileNotFoundError("No detected panels — run detection first")
+    rgb_panels = load_geojson(root, "panels", modality="rgb")
+    th_panels = load_geojson(root, "panels", modality="thermal")
+    if not rgb_panels or not rgb_panels.get("features"):
+        raise FileNotFoundError("No RGB panels — run RGB detection first")
+    if not th_panels or not th_panels.get("features"):
+        raise FileNotFoundError("No thermal panels — run thermal detection first")
+
     rgb_path = ortho_rgb(root)
     th_path = ortho_thermal_aligned(root)
     if not rgb_path.is_file():
@@ -141,26 +259,33 @@ def run_segmentation(
         if progress:
             progress(p, msg)
 
-    prog(5, "Pairing panels")
-    pairs = pair_panels_self(panels)
+    prog(5, f"Pairing RGB↔thermal panels [{SEGMENTATION_REV}]")
+    pairs = pair_rgb_thermal_panels(
+        rgb_panels,
+        th_panels,
+        search_radius_m=search_radius_m,
+        min_iou=min_iou,
+    )
+    if not pairs:
+        raise RuntimeError(
+            f"No RGB↔thermal pairs (min IoU={min_iou}, "
+            f"search_radius_m={search_radius_m or 'auto'}) — check both detections overlap"
+        )
+
     seg = segmentation_root(root)
-    # clear old panel dirs
     panels_dir = seg / "panels"
     if panels_dir.is_dir():
         for child in panels_dir.iterdir():
             if child.is_dir():
                 shutil.rmtree(child, ignore_errors=True)
 
-    from pyproj import Transformer
-
-    prog(15, f"Extracting {len(pairs)} panel crops")
+    prog(12, f"Extracting {len(pairs)} paired crops (deskewed, full-res stats)")
     out_pairs: list[dict] = []
     pair_features = []
 
     with rasterio.open(rgb_path) as rgb_ds, rasterio.open(th_path) as th_ds:
         from_wgs_rgb = None
-        to_wgs = transformer_to_wgs84(rgb_ds.crs)
-        if to_wgs is not None:
+        if transformer_to_wgs84(rgb_ds.crs) is not None:
             from_wgs_rgb = Transformer.from_crs("EPSG:4326", rgb_ds.crs, always_xy=True)
         from_wgs_th = None
         if transformer_to_wgs84(th_ds.crs) is not None:
@@ -171,89 +296,134 @@ def run_segmentation(
         n = max(1, len(pairs))
         for i, pair in enumerate(pairs):
             pid = pair["id"]
-            ring = pair["ring"]
-            xs_ll = [p[0] for p in ring]
-            ys_ll = [p[1] for p in ring]
-            # margin in lon/lat fraction of bbox
-            minx, maxx = min(xs_ll), max(xs_ll)
-            miny, maxy = min(ys_ll), max(ys_ll)
-            dx = (maxx - minx) * margin_factor + 1e-9
-            dy = (maxy - miny) * margin_factor + 1e-9
-            minx -= dx
-            maxx += dx
-            miny -= dy
-            maxy += dy
+            rgb_ring = pair["rgb_ring"]
+            th_ring = pair["thermal_ring"]
 
-            # RGB window in RGB CRS
-            corners = [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy)]
-            rgb_xy = [_lonlat_to_xy(x, y, from_wgs_rgb) for x, y in corners]
-            th_xy = [_lonlat_to_xy(x, y, from_wgs_th) for x, y in corners]
-            rw = min(p[0] for p in rgb_xy), min(p[1] for p in rgb_xy), max(p[0] for p in rgb_xy), max(p[1] for p in rgb_xy)
-            tw = min(p[0] for p in th_xy), min(p[1] for p in th_xy), max(p[0] for p in th_xy), max(p[1] for p in th_xy)
+            rgb_preview = crop_oriented_panel(
+                rgb_ds, rgb_ring, from_wgs_rgb, margin_factor=margin_factor, is_rgb=True
+            )
+            th_preview_raw = crop_oriented_panel(
+                th_ds, th_ring, from_wgs_th, margin_factor=margin_factor, is_rgb=False
+            )
+            # Exact thermal panel (no margin) for stats + archived raw
+            th_exact = crop_oriented_panel(
+                th_ds, th_ring, from_wgs_th, margin_factor=0.0, is_rgb=False
+            )
+            stats = _thermal_stats(th_exact)
 
-            rgb_img = _read_window_rgb(rgb_ds, rw[0], rw[1], rw[2], rw[3])
-            th_raw, th_prev = _read_window_thermal(th_ds, tw[0], tw[1], tw[2], tw[3])
-            stats = _thermal_stats(th_raw)
+            rgb_prev_u8 = _downscale_u8(rgb_preview, PREVIEW_MAX)
+            th_prev_u8 = _downscale_u8(_stretch_u8(th_preview_raw), PREVIEW_MAX)
+            if th_prev_u8.ndim == 2:
+                th_prev_u8 = cv2.cvtColor(th_prev_u8, cv2.COLOR_GRAY2RGB)
 
             dest = panels_dir / pid
             dest.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(rgb_img).save(dest / "rgb.png")
-            Image.fromarray(th_prev).save(dest / "thermal.png")
-            # raw thermal small geotiff-less npy alternative: save float32 tif without geo
+            Image.fromarray(rgb_prev_u8).save(dest / "rgb.png")
+            Image.fromarray(th_prev_u8).save(dest / "thermal.png")
             with rasterio.open(
                 dest / "thermal.tif",
                 "w",
                 driver="GTiff",
-                height=th_raw.shape[0],
-                width=th_raw.shape[1],
+                height=th_exact.shape[0],
+                width=th_exact.shape[1],
                 count=1,
                 dtype="float32",
                 compress="lzw",
             ) as dst:
-                dst.write(th_raw, 1)
+                dst.write(th_exact, 1)
+                dst.update_tags(
+                    min_temperature=stats.get("min_temperature"),
+                    max_temperature=stats.get("max_temperature"),
+                    mean_temperature=stats.get("mean_temperature"),
+                    median_temperature=stats.get("median_temperature"),
+                    std_temperature=stats.get("std_temperature"),
+                    var_temperature=stats.get("var_temperature"),
+                    temperature_unit=stats.get("temperature_unit", "Celsius"),
+                )
 
             meta = {
                 "id": pid,
+                "rgb_id": pair.get("rgb_id"),
+                "thermal_id": pair.get("thermal_id"),
                 "confidence": pair.get("confidence"),
+                "thermal_confidence": pair.get("thermal_confidence"),
                 "iou": pair.get("iou"),
+                "distance_m": pair.get("distance_m"),
                 "margin_factor": margin_factor,
+                "min_iou": min_iou,
+                "segmentation_rev": SEGMENTATION_REV,
                 **stats,
             }
             atomic_write_json(dest / "meta.json", meta)
-            out_pairs.append({**pair, "stats": stats, "paths": {"rgb": f"panels/{pid}/rgb.png", "thermal": f"panels/{pid}/thermal.png"}})
+
+            ring = pair.get("ring") or rgb_ring
+            out_pairs.append(
+                {
+                    **pair,
+                    "stats": stats,
+                    "paths": {
+                        "rgb": f"panels/{pid}/rgb.png",
+                        "thermal": f"panels/{pid}/thermal.png",
+                    },
+                }
+            )
             pair_features.append(
                 polygon_feature(
-                    [[p[0], p[1]] for p in ring[:4]],
+                    [[float(p[0]), float(p[1])] for p in ring[:4]],
                     {
                         "kind": "pair",
                         "id": pid,
                         "mean_temperature": stats.get("mean_temperature"),
+                        "var_temperature": stats.get("var_temperature"),
                         "confidence": pair.get("confidence"),
+                        "iou": pair.get("iou"),
                     },
                     fid=pid,
                 )
             )
-            if i % 10 == 0 or i == n - 1:
-                prog(15 + 80 * (i + 1) / n, f"Cropped {i + 1}/{n}")
+            if i % 5 == 0 or i == n - 1:
+                prog(12 + 85 * (i + 1) / n, f"Cropped {i + 1}/{n} [{SEGMENTATION_REV}]")
 
-    atomic_write_json(seg / "pairs.json", {"pairs": out_pairs, "count": len(out_pairs)})
+    atomic_write_json(
+        seg / "pairs.json",
+        {
+            "pairs": out_pairs,
+            "count": len(out_pairs),
+            "margin_factor": margin_factor,
+            "min_iou": min_iou,
+            "search_radius_m": search_radius_m,
+            "segmentation_rev": SEGMENTATION_REV,
+        },
+    )
     atomic_write_json(seg / "pairs.geojson", feature_collection(pair_features, name="pairs"))
-    prog(100, f"Segmentation complete — {len(out_pairs)} pairs")
-    return {"count": len(out_pairs)}
+    prog(100, f"Segmentation complete — {len(out_pairs)} pairs [{SEGMENTATION_REV}]")
+    return {
+        "count": len(out_pairs),
+        "segmentation_rev": SEGMENTATION_REV,
+        "margin_factor": margin_factor,
+        "min_iou": min_iou,
+    }
 
 
 def segmentation_status(project_root: Path) -> dict[str, Any]:
     root = Path(project_root)
     pairs_path = segmentation_root(root) / "pairs.json"
     count = 0
+    rev = None
     if pairs_path.is_file():
         try:
-            count = int(json.loads(pairs_path.read_text(encoding="utf-8")).get("count") or 0)
+            data = json.loads(pairs_path.read_text(encoding="utf-8"))
+            count = int(data.get("count") or 0)
+            rev = data.get("segmentation_rev")
         except Exception:
             count = 0
+    msg = f"{count} panel pairs" if count else "Run segmentation after RGB + thermal detection"
+    if rev and count:
+        msg = f"{count} panel pairs [{rev}]"
     return {
         "ready": count > 0,
-        "message": f"{count} panel pairs" if count else "Run segmentation after detection",
+        "message": msg,
         "has_pairs": count > 0,
         "pair_count": count,
+        "segmentation_rev": rev,
     }

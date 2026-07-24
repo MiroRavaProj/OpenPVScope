@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "pybind11>=2.12"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openpvscope-spatial-nms"
+version = "0.1.0"
+description = "Optional C++ custom spatial NMS for OpenPVScope"
+requires-python = ">=3.13"

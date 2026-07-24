@@ -39,7 +39,10 @@ export function PanelInspector(props: {
     max_temperature?: number | null;
     median_temperature?: number | null;
     std_temperature?: number | null;
+    var_temperature?: number | null;
     confidence?: number | null;
+    iou?: number | null;
+    distance_m?: number | null;
   } | null;
 
   return (
@@ -80,6 +83,16 @@ export function PanelInspector(props: {
             </dd>
           </div>
           <div>
+            <dt>Variance</dt>
+            <dd>{fmt(stats.var_temperature)}</dd>
+          </div>
+          <div>
+            <dt>Match IoU / m</dt>
+            <dd>
+              {fmt(stats.iou)} / {fmt(stats.distance_m)}
+            </dd>
+          </div>
+          <div>
             <dt>Confidence</dt>
             <dd>{fmt(stats.confidence)}</dd>
           </div>
@@ -106,6 +119,8 @@ export function SegmentationTools(props: {
   const [count, setCount] = useState(0);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [margin, setMargin] = useState(0.2);
+  const [minIou, setMinIou] = useState(0.1);
 
   const refresh = useCallback(async () => {
     try {
@@ -133,6 +148,7 @@ export function SegmentationTools(props: {
         if (cancelled) return;
         if (!job.running) {
           setRunning(false);
+          if (job.error) onError(String(job.error));
           await refresh();
           onRefreshMap();
           onProjectRefresh();
@@ -149,12 +165,16 @@ export function SegmentationTools(props: {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [running, refresh, onRefreshMap, onProjectRefresh]);
+  }, [running, refresh, onRefreshMap, onProjectRefresh, onError]);
 
   async function run() {
     setBusy(true);
     try {
-      await api.runSegmentation();
+      await api.runSegmentation({
+        margin_factor: margin,
+        min_iou: minIou,
+        search_radius_m: null,
+      });
       setRunning(true);
     } catch (e) {
       onError(String(e));
@@ -168,6 +188,40 @@ export function SegmentationTools(props: {
       <div className="tool-panel">
         <h3>Segmentation</h3>
         <p className="muted tool-hint">{status}</p>
+        <p className="muted tool-hint">
+          Pairs each RGB detection to the nearest overlapping thermal panel, then extracts deskewed
+          crops. Thermal stats use the exact panel (no margin), full resolution.
+        </p>
+        <label
+          className="tool-field"
+          title="Extra border around the deskewed preview crop (0.2 = 20% of panel size each side). Stats ignore this."
+        >
+          Preview margin
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={margin}
+            disabled={busy || running}
+            onChange={(e) => setMargin(Number(e.target.value))}
+          />
+        </label>
+        <label
+          className="tool-field"
+          title="Minimum center IoU between RGB and thermal panels to accept a pair (legacy default 0.1)."
+        >
+          Min pair IoU
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={minIou}
+            disabled={busy || running}
+            onChange={(e) => setMinIou(Number(e.target.value))}
+          />
+        </label>
         <button type="button" className="primary" disabled={busy || running} onClick={run}>
           {running ? "Extracting…" : "Run pairing & extract"}
         </button>

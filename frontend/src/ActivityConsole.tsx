@@ -53,6 +53,7 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   });
   const seqRef = useRef(0);
   const localJobRef = useRef<ConsoleJob | null>(null);
+  const pollStateRef = useRef({ inFlight: false });
 
   useEffect(() => {
     try {
@@ -74,7 +75,10 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     seqRef.current = snap.seq;
     if (snap.entries.length) {
       setEntries((prev) => {
-        const merged = [...prev, ...snap.entries];
+        const seen = new Set(prev.map((e) => e.seq));
+        const add = snap.entries.filter((e) => !seen.has(e.seq));
+        if (!add.length) return prev;
+        const merged = [...prev, ...add];
         return merged.length > 600 ? merged.slice(-600) : merged;
       });
     }
@@ -91,8 +95,9 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
-    let inFlight = false;
     let failStreak = 0;
+    // Shared across Strict Mode remounts so overlapping polls cannot duplicate
+    const pollState = pollStateRef.current;
 
     const schedule = (ms: number) => {
       if (cancelled) return;
@@ -102,22 +107,23 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     };
 
     const tick = async () => {
-      if (cancelled || inFlight) return;
-      inFlight = true;
+      if (cancelled || pollState.inFlight) return;
+      pollState.inFlight = true;
       try {
-        const snap = await api.console(seqRef.current);
+        const since = seqRef.current;
+        const snap = await api.console(since);
         if (!cancelled) {
           failStreak = 0;
           applySnapshot(snap);
         }
-        schedule(900);
+        const busy = Boolean(snap.job && snap.job.status === "running");
+        schedule(busy ? 400 : 900);
       } catch {
-        // Backend down / restarting — back off hard so DevTools isn't flooded.
         failStreak = Math.min(failStreak + 1, 6);
         const delay = Math.min(30_000, 1500 * 2 ** failStreak);
         schedule(delay);
       } finally {
-        inFlight = false;
+        pollState.inFlight = false;
       }
     };
 

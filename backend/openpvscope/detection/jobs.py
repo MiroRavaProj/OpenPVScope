@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import traceback
 import threading
+from pathlib import Path
 from typing import Any, Literal
 
 from openpvscope.console import get_console
@@ -11,6 +12,8 @@ from openpvscope.detection.pipeline import (
     DEFAULT_CONFIDENCE,
     DEFAULT_NMS_IOU,
     DEFAULT_NUM_TEMPLATES,
+    DEFAULT_THERMAL_TEMP_CAP,
+    PIPELINE_REV,
     run_detection,
 )
 from openpvscope.domain.models import StepStatus
@@ -33,9 +36,11 @@ def start_detection_job(
     store: ProjectStore,
     *,
     modality: RunModality = "both",
-    confidence: float = DEFAULT_CONFIDENCE,
+    confidence_rgb: float = DEFAULT_CONFIDENCE,
+    confidence_thermal: float = DEFAULT_CONFIDENCE,
     nms_iou: float = DEFAULT_NMS_IOU,
     num_templates: int = DEFAULT_NUM_TEMPLATES,
+    thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
 ) -> None:
     global _thread
     with _lock:
@@ -45,7 +50,6 @@ def start_detection_job(
 
     console = get_console()
     root = store.root
-    # Always run both modalities when requested; single-mod kept for API compat
     if modality == "both":
         mods: list[Literal["rgb", "thermal"]] = ["rgb", "thermal"]
     else:
@@ -53,10 +57,12 @@ def start_detection_job(
 
     def work() -> None:
         label = " + ".join(m.upper() for m in mods)
+        tpl_label = "ALL" if num_templates <= 0 else str(num_templates)
         console.begin_job("Panel detection", detail=f"Template matching ({label})")
         store.checkpoint("Before panel detection")
         console.log(
-            f"Starting detection on {label} | confidence={confidence} nms_iou={nms_iou} templates={num_templates}",
+            f"Starting {label} | rgb_conf={confidence_rgb} thermal_conf={confidence_thermal} "
+            f"nms={nms_iou} templates={tpl_label} thermal_cap={thermal_temp_cap} | rev={PIPELINE_REV}",
             level="info",
             step="detection",
         )
@@ -67,32 +73,48 @@ def start_detection_job(
             for i, mod in enumerate(mods):
                 base = (i / n) * 100.0
                 span = 100.0 / n
+                conf = confidence_thermal if mod == "thermal" else confidence_rgb
 
-                def progress(p: float | None, msg: str, _base=base, _span=span, _mod=mod) -> None:
+                def progress(
+                    p: float | None,
+                    msg: str,
+                    *,
+                    level: str = "info",
+                    _base=base,
+                    _span=span,
+                    _mod=mod,
+                ) -> None:
                     mapped = None if p is None else _base + (p / 100.0) * _span
+                    lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
                     console.set_progress(
                         mapped,
                         detail=f"[{_mod}] {msg}",
                         step="detection",
-                        level="info",
+                        level=lvl,  # type: ignore[arg-type]
                     )
 
-                def log_cb(level: str, msg: str, _mod=mod) -> None:
-                    console.log(msg, level=level if level in ("info", "verbose", "warn", "error", "success") else "verbose", step="detection")
+                def log_cb(level: str, msg: str) -> None:
+                    lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+                    console.log(msg, level=lvl, step="detection")
 
-                console.log(f"=== {mod.upper()} ({i + 1}/{n}) ===", level="info", step="detection")
+                console.log(
+                    f"=== {mod.upper()} ({i + 1}/{n}) conf={conf} ===",
+                    level="info",
+                    step="detection",
+                )
                 result = run_detection(
                     root,
                     modality=mod,
-                    confidence=confidence,
+                    confidence=conf,
                     nms_iou=nms_iou,
                     num_templates=num_templates,
+                    thermal_temp_cap=thermal_temp_cap if mod == "thermal" else None,
                     progress=progress,
                     log=log_cb,
                 )
                 totals.append(result)
                 console.log(
-                    f"[{mod}] finished with {result['count']} oriented panels → {result['path']}",
+                    f"[{mod}] finished with {result['count']} panels → {result['path']}",
                     level="info",
                     step="detection",
                 )

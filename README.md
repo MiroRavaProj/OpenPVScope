@@ -2,7 +2,7 @@
 
 **OpenPVScope** is an open-source desktop application for end-to-end solar PV inspection: from drone RGB + thermal photos to georeferenced orthophotos, panel detection, thermal analysis, and anomaly classification.
 
-It is a ground-up rewrite of the *Solar PV Anomaly Detection Suite* developed for a master’s thesis on UAV thermography of PV plants.
+It is a ground-up rewrite of the earlier *Solar PV Anomaly Detection Suite* for UAV thermography of PV plants.
 
 ## What it does
 
@@ -78,4 +78,4 @@ OpenSfM and related engines have their own licenses; see attributions when bundl
 
 ## Citation
 
-If you use OpenPVScope in academic work, please cite the related thesis on UAV thermal anomaly detection for PV plants (Miro Rava).
+If you use OpenPVScope in academic work, please cite the related publication on UAV thermal anomaly detection for PV plants (Miro Rava).

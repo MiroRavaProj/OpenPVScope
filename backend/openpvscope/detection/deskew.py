@@ -1,21 +1,25 @@
-"""Deskew AOI for template matching (panels become axis-aligned in search space)."""
+"""Deskew AOI — longest side measured in pixel space (legacy suite)."""
 
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
 
-Point = tuple[float, float]
 
-
-def aoi_deskew_angle_deg(ring_lonlat: Sequence[Sequence[float]]) -> float:
+def aoi_deskew_angle_deg(
+    ring_lonlat: Sequence[Sequence[float]],
+    *,
+    affine: Any | None = None,
+) -> float:
     """
-    Rotation (OpenCV degrees, CCW positive) that aligns the AOI longest side
-    to the nearest cardinal axis — port of thesis detection pipeline logic.
-    ring as [[lon, lat], ...] (4 corners).
+    OpenCV rotation degrees (CCW+) aligning AOI longest side to nearest cardinal.
+
+    With ``affine`` (rasterio Affine), side lengths use pixel distance via rowcol
+    (xs=lon, ys=lat) — same intent as the legacy suite.
+    ring: [[lon, lat], ...] ×4
     """
     pts = [(float(p[0]), float(p[1])) for p in ring_lonlat[:4]]
     if len(pts) != 4:
@@ -25,8 +29,14 @@ def aoi_deskew_angle_deg(ring_lonlat: Sequence[Sequence[float]]) -> float:
     for i in range(4):
         p1 = pts[i]
         p2 = pts[(i + 1) % 4]
-        # lon=x, lat=y — length in geographic degrees (local OK for small AOI)
-        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        if affine is not None:
+            import rasterio.transform
+
+            r1, c1 = rasterio.transform.rowcol(affine, p1[0], p1[1])
+            r2, c2 = rasterio.transform.rowcol(affine, p2[0], p2[1])
+            length = math.hypot(float(c2 - c1), float(r2 - r1))
+        else:
+            length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
         sides.append({"p1": p1, "p2": p2, "length": length})
 
     longest = max(sides, key=lambda s: s["length"])
@@ -62,8 +72,8 @@ def rotation_matrix_expanded(
     height: int,
     angle_deg: float,
 ) -> tuple[np.ndarray, int, int]:
-    """Return 2x3 affine M and (new_w, new_h) for warpAffine with expanded canvas."""
-    center = (width / 2.0, height / 2.0)
+    """2x3 affine M and (new_w, new_h) — expand-canvas warp."""
+    center = (width // 2, height // 2)
     m = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
     cos_a = abs(m[0, 0])
     sin_a = abs(m[0, 1])
@@ -74,43 +84,40 @@ def rotation_matrix_expanded(
     return m, new_w, new_h
 
 
-def warp_rgb(image_rgb: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
-    """Warp HxWx3 uint8; returns (rotated, M 2x3)."""
-    h, w = image_rgb.shape[:2]
+def warp_image(image: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """Warp HxW or HxWxC; returns (rotated, M 2x3)."""
+    h, w = image.shape[:2]
     m, nw, nh = rotation_matrix_expanded(w, h, angle_deg)
+    border = 0 if image.ndim == 2 else (0, 0, 0)
     rotated = cv2.warpAffine(
-        image_rgb,
+        image,
         m,
         (nw, nh),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0),
+        borderValue=border,
     )
     return rotated, m
 
 
+def warp_rgb(image_rgb: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    return warp_image(image_rgb, angle_deg)
+
+
 def apply_m(m: np.ndarray, x: float, y: float) -> tuple[float, float]:
-    """Apply 2x3 affine to point."""
     nx = m[0, 0] * x + m[0, 1] * y + m[0, 2]
     ny = m[1, 0] * x + m[1, 1] * y + m[1, 2]
     return float(nx), float(ny)
 
 
 def invert_m(m: np.ndarray) -> np.ndarray:
-    """Invert 2x3 affine → 2x3."""
-    full = np.vstack([m, [0.0, 0.0, 1.0]])
-    inv = np.linalg.inv(full)
-    return inv[:2, :]
+    return cv2.invertAffineTransform(m)
 
 
 def oriented_quads_from_seed(
     seed_ring_lonlat: list[list[float]],
     centers_lonlat: list[tuple[float, float]],
 ) -> list[list[list[float]]]:
-    """
-    Translate the seed grid-cell ring so its centroid sits on each detection center.
-    Returns list of open rings [[lon,lat],×4].
-    """
     ring = [[float(p[0]), float(p[1])] for p in seed_ring_lonlat[:4]]
     if len(ring) != 4:
         raise ValueError("seed ring needs 4 corners")

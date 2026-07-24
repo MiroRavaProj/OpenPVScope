@@ -4,6 +4,10 @@ import { DetectModality, DetectionTools } from "./DetectionTools";
 import { PlantMap } from "./PlantMap";
 import { SegmentationTools } from "./SegmentationTools";
 
+/** Legacy suite map display defaults (per modality). */
+const DEFAULT_DISPLAY_RGB = 0.7;
+const DEFAULT_DISPLAY_THERMAL = 0.7;
+
 export function PlantWorkspace(props: {
   step: Extract<PipelineStep, "detection" | "segmentation">;
   onProjectChange: (p: ProjectPayload) => void;
@@ -15,6 +19,8 @@ export function PlantWorkspace(props: {
   const [drawEnabled, setDrawEnabled] = useState(false);
   const [editCorners, setEditCorners] = useState(false);
   const [modality, setModality] = useState<DetectModality>("rgb");
+  const [displayConfidenceRgb, setDisplayConfidenceRgb] = useState(DEFAULT_DISPLAY_RGB);
+  const [displayConfidenceThermal, setDisplayConfidenceThermal] = useState(DEFAULT_DISPLAY_THERMAL);
 
   const bumpMap = useCallback(() => setRefreshKey((k) => k + 1), []);
   const onProjectRefresh = useCallback(() => {
@@ -36,6 +42,8 @@ export function PlantWorkspace(props: {
         editCorners={editCorners && props.step === "detection"}
         modality={modality}
         showPanels={props.step === "detection" ? "both" : "rgb"}
+        displayConfidenceRgb={props.step === "detection" ? displayConfidenceRgb : 0}
+        displayConfidenceThermal={props.step === "detection" ? displayConfidenceThermal : 0}
         refreshKey={refreshKey}
         selectedId={selectedId}
         onSelect={setSelectedId}
@@ -54,6 +62,16 @@ export function PlantWorkspace(props: {
           }}
           editCorners={editCorners}
           setEditCorners={setEditCorners}
+          displayConfidenceRgb={displayConfidenceRgb}
+          setDisplayConfidenceRgb={(v) => {
+            setDisplayConfidenceRgb(v);
+            bumpMap();
+          }}
+          displayConfidenceThermal={displayConfidenceThermal}
+          setDisplayConfidenceThermal={(v) => {
+            setDisplayConfidenceThermal(v);
+            bumpMap();
+          }}
           onRefreshMap={bumpMap}
           onProjectRefresh={onProjectRefresh}
           onError={props.onError}

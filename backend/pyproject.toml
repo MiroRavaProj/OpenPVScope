@@ -23,6 +23,8 @@ dependencies = [
   "opencv-python-headless>=4.8.0",
   "pyproj>=3.6.0",
   "aiofiles>=23.2.1",
+  "psutil>=5.9.0",
+  "numba>=0.60.0",
 ]
 
 [project.optional-dependencies]

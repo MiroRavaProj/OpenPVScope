@@ -125,14 +125,22 @@ class GridBody(BaseModel):
 
 
 class DetectRunBody(BaseModel):
-    confidence: float = Field(default=0.5, ge=0.1, le=0.99)
-    nms_iou: float = Field(default=0.05, ge=0.01, le=0.9)
-    num_templates: int = Field(default=1, ge=1, le=50)
+    # Per-modality match thresholds (legacy suite stored these separately; default 0.5 each)
+    confidence_rgb: float = Field(default=0.5, ge=0.1, le=0.99)
+    confidence_thermal: float = Field(default=0.5, ge=0.1, le=0.99)
+    # Deprecated alias — if sent alone, applied to both modalities
+    confidence: float | None = Field(default=None, ge=0.1, le=0.99)
+    nms_iou: float = Field(default=0.05, ge=0.01, le=0.20)
+    # 0 = use ALL grid cells as templates
+    num_templates: int = Field(default=0, ge=0, le=500)
+    thermal_temp_cap: float | None = Field(default=45.0, ge=10.0, le=70.0)
     modality: Literal["rgb", "thermal", "both"] = "both"
 
 
 class SegmentRunBody(BaseModel):
-    margin_factor: float = Field(default=0.15, ge=0.0, le=1.0)
+    margin_factor: float = Field(default=0.2, ge=0.0, le=1.0)
+    search_radius_m: float | None = Field(default=None, ge=0.5, le=50.0)
+    min_iou: float = Field(default=0.1, ge=0.0, le=1.0)
 
 
 def _pick_with_tk(mode: str) -> str | None:
@@ -172,9 +180,14 @@ def _pick_with_tk(mode: str) -> str | None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    from openpvscope.detection.pipeline import PIPELINE_REV
+    from openpvscope.segmentation.extract import SEGMENTATION_REV
+
     return {
         "status": "ok",
         "version": __version__,
+        "pipeline_rev": PIPELINE_REV,
+        "segmentation_rev": SEGMENTATION_REV,
         "opensfm_root": str(find_opensfm_root()) if find_opensfm_root() else None,
         "opencl": probe_opencl(),
     }
@@ -981,13 +994,20 @@ def api_detection_run(body: DetectRunBody) -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
+    conf_rgb = body.confidence_rgb
+    conf_thermal = body.confidence_thermal
+    if body.confidence is not None:
+        conf_rgb = body.confidence
+        conf_thermal = body.confidence
     try:
         start_detection_job(
             store,
             modality="both",
-            confidence=body.confidence,
+            confidence_rgb=conf_rgb,
+            confidence_thermal=conf_thermal,
             nms_iou=body.nms_iou,
             num_templates=body.num_templates,
+            thermal_temp_cap=body.thermal_temp_cap,
         )
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
@@ -1069,9 +1089,13 @@ def api_segmentation_run(body: SegmentRunBody = SegmentRunBody()) -> dict[str, A
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
-    margin = body.margin_factor
     try:
-        start_segmentation_job(store, margin_factor=margin)
+        start_segmentation_job(
+            store,
+            margin_factor=body.margin_factor,
+            search_radius_m=body.search_radius_m,
+            min_iou=body.min_iou,
+        )
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
     return {"started": True, "job": segmentation_job_status()}
