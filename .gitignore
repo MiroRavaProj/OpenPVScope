@@ -27,21 +27,13 @@ Thumbs.db
 !samples/**/*.opsx
 data/
 work/
-engines/*
-!engines/.gitkeep
-!engines/README.md
-!engines/opensfm/
-engines/opensfm/**
-!engines/opensfm/README.md
-!engines/dji_tsdk/
-engines/dji_tsdk/**
-!engines/dji_tsdk/README.md
 
 # Secrets / local
 .env
 .env.local
+.cursor/
 
 # Packaging artifacts
 packaging/windows/Output/
-*.exe
 *.msi
+ODX_Setup_3.8.1.exe

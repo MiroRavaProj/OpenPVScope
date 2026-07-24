@@ -1,0 +1,6 @@
+{
+  "model_file": "parametric_mlp_v1.npz",
+  "meta_file": "parametric_mlp_v1_meta.json",
+  "model_type": "numpy_mlp",
+  "integration": "DJI_Image_Processor parametric fallback"
+}
