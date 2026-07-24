@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, ConsoleEntry, ConsoleJob, ConsoleSnapshot } from "./api";
+import { useT } from "./i18n";
 
 export type ConsoleMode = "info" | "verbose";
 
@@ -198,6 +199,7 @@ function formatTime(ts: number) {
 }
 
 export function ActivityConsole() {
+  const t = useT();
   const { entries, job, mode, setMode, expanded, setExpanded, height, setHeight, clear } =
     useConsole();
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -248,7 +250,7 @@ export function ActivityConsole() {
         onPointerDown={onDragStart}
         onPointerMove={onDragMove}
         onPointerUp={onDragEnd}
-        title="Drag to resize"
+        title={t("console.dragResize")}
       />
       <div className="activity-progress-strip" aria-hidden>
         {showPulse ? (
@@ -268,9 +270,9 @@ export function ActivityConsole() {
           type="button"
           className="ghost console-toggle"
           onClick={() => setExpanded(!expanded)}
-          title={expanded ? "Minimize console" : "Expand console"}
+          title={expanded ? t("console.minimize") : t("console.expand")}
         >
-          {expanded ? "▾" : "▴"} Console
+          {expanded ? "▾" : "▴"} {t("console.toggle")}
         </button>
         <div className="console-status muted">
           {job ? (
@@ -284,28 +286,28 @@ export function ActivityConsole() {
               ) : null}
             </>
           ) : (
-            <span>Idle</span>
+            <span>{t("console.idle")}</span>
           )}
         </div>
         <div className="row console-bar-actions">
-          <div className="mode-toggle" role="group" aria-label="Console verbosity">
+          <div className="mode-toggle" role="group" aria-label={t("console.verbosityAria")}>
             <button
               type="button"
               className={mode === "info" ? "active" : ""}
               onClick={() => setMode("info")}
             >
-              Info
+              {t("console.info")}
             </button>
             <button
               type="button"
               className={mode === "verbose" ? "active" : ""}
               onClick={() => setMode("verbose")}
             >
-              Verbose
+              {t("console.verbose")}
             </button>
           </div>
           <button type="button" className="ghost" onClick={clear}>
-            Clear
+            {t("console.clear")}
           </button>
         </div>
       </div>
@@ -325,14 +327,14 @@ export function ActivityConsole() {
                 )}
               </div>
               <div className="muted console-progress-label">
-                {job?.detail || job?.title || "Working"}
+                {job?.detail || job?.title || t("console.working")}
                 {typeof progress === "number" ? ` · ${Math.round(progress)}%` : ""}
               </div>
             </div>
           )}
           <div className="console-log" ref={listRef}>
             {visible.length === 0 ? (
-              <div className="muted console-empty">No activity yet.</div>
+              <div className="muted console-empty">{t("console.empty")}</div>
             ) : (
               visible.map((e) => (
                 <div key={e.seq} className={`console-line level-${e.level}`}>

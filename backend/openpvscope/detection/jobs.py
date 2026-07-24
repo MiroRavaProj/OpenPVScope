@@ -41,6 +41,8 @@ def start_detection_job(
     nms_iou: float = DEFAULT_NMS_IOU,
     num_templates: int = DEFAULT_NUM_TEMPLATES,
     thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
+    advanced_validation: bool = True,
+    fine_tuning_confidence: float = 0.65,
 ) -> None:
     global _thread
     with _lock:
@@ -62,7 +64,8 @@ def start_detection_job(
         store.checkpoint("Before panel detection")
         console.log(
             f"Starting {label} | rgb_conf={confidence_rgb} thermal_conf={confidence_thermal} "
-            f"nms={nms_iou} templates={tpl_label} thermal_cap={thermal_temp_cap} | rev={PIPELINE_REV}",
+            f"nms={nms_iou} templates={tpl_label} thermal_cap={thermal_temp_cap} "
+            f"refine={advanced_validation} ft_conf={fine_tuning_confidence} | rev={PIPELINE_REV}",
             level="info",
             step="detection",
         )
@@ -109,6 +112,8 @@ def start_detection_job(
                     nms_iou=nms_iou,
                     num_templates=num_templates,
                     thermal_temp_cap=thermal_temp_cap if mod == "thermal" else None,
+                    advanced_validation=advanced_validation,
+                    fine_tuning_confidence=fine_tuning_confidence,
                     progress=progress,
                     log=log_cb,
                 )

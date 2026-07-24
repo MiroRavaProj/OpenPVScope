@@ -5,7 +5,6 @@ import {
   PipelineStep,
   ProjectPayload,
   RecentItem,
-  STEP_LABELS,
   STEPS,
 } from "./api";
 import { MapView } from "./MapView";
@@ -13,8 +12,31 @@ import { OrthoAlignmentView } from "./AlignmentView";
 import { SettingsModal } from "./SettingsModal";
 import { ActivityConsole, useConsole } from "./ActivityConsole";
 import { PlantWorkspace } from "./PlantWorkspace";
+import { AppLanguage, I18nProvider, isAppLanguage, useT } from "./i18n";
 
 export default function App() {
+  const [language, setLanguage] = useState<AppLanguage>("en");
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then((s) => {
+        if (isAppLanguage(s.language)) setLanguage(s.language);
+      })
+      .catch(() => {
+        /* ignore */
+      });
+  }, []);
+
+  return (
+    <I18nProvider language={language}>
+      <AppInner onLanguageChange={setLanguage} />
+    </I18nProvider>
+  );
+}
+
+function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
+  const t = useT();
   const { noteLocal } = useConsole();
   const [project, setProject] = useState<ProjectPayload | null>(null);
   const [step, setStep] = useState<PipelineStep>("photogrammetry");
@@ -31,6 +53,18 @@ export default function App() {
   const [exportPrompt, setExportPrompt] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
 
+  const stepLabel = useCallback((s: PipelineStep) => t(`steps.${s}`), [t]);
+
+  const applySettings = useCallback(
+    (s: AppSettings) => {
+      setAppSettings(s);
+      setExportMode(s.opsz_default_mode);
+      if (isAppLanguage(s.language)) props.onLanguageChange(s.language);
+      if (s.default_project_dir) setProjectDir((prev) => prev || s.default_project_dir || "");
+    },
+    [props],
+  );
+
   const refresh = useCallback(async () => {
     try {
       const p = await api.current();
@@ -43,14 +77,12 @@ export default function App() {
   const loadWelcomeExtras = useCallback(async () => {
     try {
       const [s, r] = await Promise.all([api.getSettings(), api.recentProjects()]);
-      setAppSettings(s);
-      setExportMode(s.opsz_default_mode);
-      if (s.default_project_dir) setProjectDir((prev) => prev || s.default_project_dir || "");
+      applySettings(s);
       setRecent(r.recent);
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [applySettings]);
 
   useEffect(() => {
     api.opencl().then((r) => setOpenclOk(r.available)).catch(() => setOpenclOk(false));
@@ -128,11 +160,11 @@ export default function App() {
 
   async function create() {
     if (!projectDir.trim()) {
-      setError("Choose a folder where the project will be saved.");
+      setError(t("app.errorChooseFolder"));
       return;
     }
     if (!name.trim()) {
-      setError("Enter a project name.");
+      setError(t("app.errorEnterName"));
       return;
     }
     setBusy(true);
@@ -170,7 +202,7 @@ export default function App() {
   async function openProj(path?: string) {
     const pth = (path ?? openPath).trim();
     if (!pth) {
-      setError("Choose an existing .opsx project file.");
+      setError(t("app.errorChooseOpsx"));
       return;
     }
     setBusy(true);
@@ -210,7 +242,7 @@ export default function App() {
       if (!opsz.path) return;
       const dest = await api.pickDirectory();
       if (!dest.path) {
-        setError("Choose a destination folder for the imported project.");
+        setError(t("app.errorChooseImportDest"));
         return;
       }
       setBusy(true);
@@ -241,7 +273,7 @@ export default function App() {
   async function onSkipGeotiff(rgb: File, thermal: File) {
     setBusy(true);
     setError(null);
-    noteLocal("Import GeoTIFFs", "Uploading orthophotos…");
+    noteLocal(t("app.consoleImportGeotiffs"), t("app.consoleUploadingOrthos"));
     try {
       const p = await api.skipPhotogrammetry(rgb, thermal);
       setProject(p);
@@ -256,7 +288,7 @@ export default function App() {
   async function runModality(modality: "rgb" | "thermal") {
     setBusy(true);
     setError(null);
-    noteLocal(`OpenSfM (${modality})`, "Starting photogrammetry…");
+    noteLocal(t("app.consoleOpensfm", { modality }), t("app.consoleStartingPhoto"));
     try {
       await api.runPhoto(modality);
       let cancelled = false;
@@ -284,8 +316,13 @@ export default function App() {
   }
 
   const settingsButton = (
-    <button type="button" className="ghost" onClick={() => setSettingsOpen(true)} title="Settings">
-      Settings
+    <button
+      type="button"
+      className="ghost"
+      onClick={() => setSettingsOpen(true)}
+      title={t("app.settingsTitle")}
+    >
+      {t("app.settings")}
     </button>
   );
 
@@ -297,18 +334,16 @@ export default function App() {
             <div className="card" style={{ maxWidth: 580 }}>
               <div className="row" style={{ justifyContent: "space-between", marginBottom: "0.5rem" }}>
                 <h2 style={{ margin: 0 }}>
-                  <span style={{ color: "var(--accent)" }}>Open</span>PVScope
+                  <span style={{ color: "var(--accent)" }}>{t("app.brandOpen")}</span>
+                  {t("app.brandRest")}
                 </h2>
                 {settingsButton}
               </div>
-              <p>
-                Start by creating a project on disk (autosaved continuously) or opening an existing{" "}
-                <code>.opsx</code> file. Use <code>.opsz</code> only to import/export a portable archive.
-              </p>
+              <p>{t("app.welcomeBlurb")}</p>
 
               {recent.length > 0 && (
                 <>
-                  <h3 style={{ margin: "1rem 0 0.5rem", fontSize: "1rem" }}>Recent</h3>
+                  <h3 style={{ margin: "1rem 0 0.5rem", fontSize: "1rem" }}>{t("app.recent")}</h3>
                   <ul className="recent-list">
                     {recent.map((r) => (
                       <li key={r.path}>
@@ -320,7 +355,9 @@ export default function App() {
                           onClick={() => openProj(r.path)}
                         >
                           <strong>{r.name}</strong>
-                          <span className="muted">{r.exists ? r.path : `${r.path} (missing)`}</span>
+                          <span className="muted">
+                            {r.exists ? r.path : `${r.path} ${t("app.missing")}`}
+                          </span>
                         </button>
                       </li>
                     ))}
@@ -328,13 +365,13 @@ export default function App() {
                 </>
               )}
 
-              <h3 style={{ margin: "1.25rem 0 0.5rem", fontSize: "1rem" }}>New project</h3>
+              <h3 style={{ margin: "1.25rem 0 0.5rem", fontSize: "1rem" }}>{t("app.newProject")}</h3>
               <div className="row" style={{ marginBottom: "0.5rem" }}>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Project name"
+                  placeholder={t("app.projectNamePlaceholder")}
                 />
               </div>
               <div className="row" style={{ marginBottom: "0.75rem" }}>
@@ -342,11 +379,11 @@ export default function App() {
                   type="text"
                   value={projectDir}
                   onChange={(e) => setProjectDir(e.target.value)}
-                  placeholder="Parent folder (required)"
+                  placeholder={t("app.parentFolderPlaceholder")}
                   style={{ minWidth: 280, flex: 1 }}
                 />
                 <button type="button" onClick={browseNewFolder} disabled={busy}>
-                  Browse…
+                  {t("common.browse")}
                 </button>
               </div>
               <button
@@ -354,30 +391,32 @@ export default function App() {
                 disabled={busy || !name.trim() || !projectDir.trim()}
                 onClick={create}
               >
-                Create project
+                {t("app.createProject")}
               </button>
 
-              <h3 style={{ margin: "1.5rem 0 0.5rem", fontSize: "1rem" }}>Open existing</h3>
+              <h3 style={{ margin: "1.5rem 0 0.5rem", fontSize: "1rem" }}>{t("app.openExisting")}</h3>
               <div className="row" style={{ marginBottom: "0.75rem" }}>
                 <input
                   type="text"
                   value={openPath}
                   onChange={(e) => setOpenPath(e.target.value)}
-                  placeholder="Path to project.opsx"
+                  placeholder={t("app.opsxPathPlaceholder")}
                   style={{ minWidth: 280, flex: 1 }}
                 />
                 <button type="button" onClick={browseOpen} disabled={busy}>
-                  Browse…
+                  {t("common.browse")}
                 </button>
                 <button type="button" disabled={busy || !openPath.trim()} onClick={() => openProj()}>
-                  Open
+                  {t("app.open")}
                 </button>
               </div>
 
-              <h3 style={{ margin: "1.25rem 0 0.5rem", fontSize: "1rem" }}>Portable archive</h3>
+              <h3 style={{ margin: "1.25rem 0 0.5rem", fontSize: "1rem" }}>
+                {t("app.portableArchive")}
+              </h3>
               <div className="row">
                 <button type="button" disabled={busy} onClick={importArchive}>
-                  Import .opsz…
+                  {t("app.importOpsz")}
                 </button>
               </div>
 
@@ -390,8 +429,7 @@ export default function App() {
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           onSaved={(s) => {
-            setAppSettings(s);
-            setExportMode(s.opsz_default_mode);
+            applySettings(s);
             if (s.default_project_dir) setProjectDir(s.default_project_dir);
             void loadWelcomeExtras();
           }}
@@ -410,7 +448,7 @@ export default function App() {
             </div>
             <div className="muted">{project.manifest.name}</div>
             <div className="muted" style={{ fontSize: "0.72rem", marginTop: "0.25rem" }}>
-              Autosave on
+              {t("app.autosaveOn")}
             </div>
           </div>
           <ul className="steps">
@@ -429,7 +467,7 @@ export default function App() {
                     onClick={() => setStep(s)}
                   >
                     <span className={`badge ${st}`}>{i + 1}</span>
-                    {STEP_LABELS[s]}
+                    {stepLabel(s)}
                   </button>
                 </li>
               );
@@ -437,10 +475,10 @@ export default function App() {
           </ul>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <button className="ghost" onClick={() => setExportPrompt(true)} disabled={busy}>
-              Export .opsz
+              {t("app.exportOpsz")}
             </button>
             <button className="ghost" onClick={closeProj} disabled={busy}>
-              Close
+              {t("common.close")}
             </button>
             {settingsButton}
           </div>
@@ -448,22 +486,26 @@ export default function App() {
         <main className="main">
           <div className="topbar">
             <div>
-              <strong>{STEP_LABELS[step]}</strong>
+              <strong>{stepLabel(step)}</strong>
               <div className="muted" title={project.root}>
                 {project.opsx_path ?? project.root}
-                {openclOk === false && " · OpenCL not detected"}
-                {openclOk === true && " · OpenCL OK"}
+                {openclOk === false && ` · ${t("app.openclMissing")}`}
+                {openclOk === true && ` · ${t("app.openclOk")}`}
               </div>
             </div>
             <div className="row topbar-actions">
-              <div className="history-nav" title="Undo / redo project changes (Ctrl+Z / Ctrl+Y)">
+              <div className="history-nav" title={t("app.historyGroupTitle")}>
                 <button
                   type="button"
                   className="icon-btn"
                   disabled={busy || !hist?.can_undo}
                   onClick={doUndo}
-                  aria-label="Back"
-                  title={hist?.undo_label ? `Back: ${hist.undo_label}` : "Back"}
+                  aria-label={t("app.historyBack")}
+                  title={
+                    hist?.undo_label
+                      ? t("app.historyBackWithLabel", { label: hist.undo_label })
+                      : t("app.historyBack")
+                  }
                 >
                   ←
                 </button>
@@ -472,14 +514,18 @@ export default function App() {
                   className="icon-btn"
                   disabled={busy || !hist?.can_redo}
                   onClick={doRedo}
-                  aria-label="Forward"
-                  title={hist?.redo_label ? `Forward: ${hist.redo_label}` : "Forward"}
+                  aria-label={t("app.historyForward")}
+                  title={
+                    hist?.redo_label
+                      ? t("app.historyForwardWithLabel", { label: hist.redo_label })
+                      : t("app.historyForward")
+                  }
                 >
                   →
                 </button>
               </div>
               {project.orthos_ready && step !== "alignment" && (
-                <button onClick={() => setStep("alignment")}>Ortho alignment / map</button>
+                <button onClick={() => setStep("alignment")}>{t("app.orthoAlignmentMap")}</button>
               )}
             </div>
           </div>
@@ -491,7 +537,10 @@ export default function App() {
                 log={log}
                 onSkip={onSkipGeotiff}
                 onUpload={async (modality, files) => {
-                  noteLocal("Upload images", `Saving ${modality} files…`);
+                  noteLocal(
+                    t("app.consoleUploadImages"),
+                    t("app.consoleSavingFiles", { modality }),
+                  );
                   await api.uploadRaw(modality, files);
                 }}
                 onRun={runModality}
@@ -516,8 +565,8 @@ export default function App() {
             )}
             {(step === "detection" || step === "segmentation") && !project.orthos_ready && (
               <div className="card">
-                <h2>{STEP_LABELS[step]}</h2>
-                <p>Import or build orthophotos and complete alignment before using the plant map.</p>
+                <h2>{stepLabel(step)}</h2>
+                <p>{t("app.gateNeedOrthos")}</p>
               </div>
             )}
             {step === "models" && <ScaffoldStep kind="models" />}
@@ -535,8 +584,7 @@ export default function App() {
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           onSaved={(s) => {
-            setAppSettings(s);
-            setExportMode(s.opsz_default_mode);
+            applySettings(s);
           }}
         />
 
@@ -544,16 +592,18 @@ export default function App() {
           <div className="modal-backdrop" onClick={() => setExportPrompt(false)}>
             <div className="modal-card settings-modal" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
-                <h2>Export .opsz</h2>
+                <h2>{t("app.exportTitle")}</h2>
                 <button type="button" className="ghost" onClick={() => setExportPrompt(false)}>
-                  Close
+                  {t("common.close")}
                 </button>
               </div>
               <div className="settings-body">
                 <p className="muted">
-                  Full includes orthophotos and data. Light skips rebuildable folders (
-                  {(appSettings?.opsz_light_exclude || ["work/", "photogrammetry/"]).join(", ")}
-                  ). Undo history is never exported.
+                  {t("app.exportBlurb", {
+                    prefixes: (
+                      appSettings?.opsz_light_exclude || ["work/", "photogrammetry/"]
+                    ).join(", "),
+                  })}
                 </p>
                 <label className="settings-field row-check">
                   <input
@@ -562,7 +612,7 @@ export default function App() {
                     checked={exportMode === "full"}
                     onChange={() => setExportMode("full")}
                   />
-                  <span>Full archive</span>
+                  <span>{t("app.exportFull")}</span>
                 </label>
                 <label className="settings-field row-check">
                   <input
@@ -571,12 +621,12 @@ export default function App() {
                     checked={exportMode === "light"}
                     onChange={() => setExportMode("light")}
                   />
-                  <span>Light archive</span>
+                  <span>{t("app.exportLight")}</span>
                 </label>
               </div>
               <div className="settings-footer">
                 <button type="button" className="ghost" onClick={() => setExportPrompt(false)}>
-                  Cancel
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -584,7 +634,7 @@ export default function App() {
                   disabled={busy}
                   onClick={() => runExport(exportMode)}
                 >
-                  Choose destination…
+                  {t("app.exportChooseDest")}
                 </button>
               </div>
             </div>
@@ -603,19 +653,17 @@ function PhotogrammetryPanel(props: {
   onUpload: (m: "rgb" | "thermal", files: FileList) => Promise<void>;
   onRun: (m: "rgb" | "thermal") => void;
 }) {
+  const t = useT();
   const [rgbFile, setRgbFile] = useState<File | null>(null);
   const [thFile, setThFile] = useState<File | null>(null);
 
   return (
     <div className="card">
-      <h2>Photogrammetry</h2>
-      <p>
-        Upload raw RGB and thermal drone images. OpenSfM 1.0 builds georeferenced orthophotos.
-        Thermal TIFF is used as-is; DJI proprietary formats will use a converter hook.
-      </p>
+      <h2>{t("app.photoTitle")}</h2>
+      <p>{t("app.photoBlurb")}</p>
       <div className="row" style={{ marginBottom: "0.75rem" }}>
         <label>
-          RGB images{" "}
+          {t("app.photoRgbImages")}{" "}
           <input
             type="file"
             multiple
@@ -625,12 +673,12 @@ function PhotogrammetryPanel(props: {
           />
         </label>
         <button disabled={props.busy} onClick={() => props.onRun("rgb")}>
-          Run OpenSfM (RGB)
+          {t("app.photoRunRgb")}
         </button>
       </div>
       <div className="row" style={{ marginBottom: "1rem" }}>
         <label>
-          Thermal images{" "}
+          {t("app.photoThermalImages")}{" "}
           <input
             type="file"
             multiple
@@ -640,18 +688,18 @@ function PhotogrammetryPanel(props: {
           />
         </label>
         <button disabled={props.busy} onClick={() => props.onRun("thermal")}>
-          Run OpenSfM (Thermal)
+          {t("app.photoRunThermal")}
         </button>
       </div>
       <hr style={{ borderColor: "var(--border)" }} />
-      <p style={{ marginTop: "1rem" }}>Already have orthophoto GeoTIFFs? Skip this step:</p>
+      <p style={{ marginTop: "1rem" }}>{t("app.photoSkipIntro")}</p>
       <div className="row">
         <label>
-          RGB GeoTIFF{" "}
+          {t("app.photoRgbGeotiff")}{" "}
           <input type="file" accept=".tif,.tiff" onChange={(e) => setRgbFile(e.target.files?.[0] ?? null)} />
         </label>
         <label>
-          Thermal GeoTIFF{" "}
+          {t("app.photoThermalGeotiff")}{" "}
           <input type="file" accept=".tif,.tiff" onChange={(e) => setThFile(e.target.files?.[0] ?? null)} />
         </label>
         <button
@@ -659,7 +707,7 @@ function PhotogrammetryPanel(props: {
           disabled={props.busy || !rgbFile || !thFile}
           onClick={() => rgbFile && thFile && props.onSkip(rgbFile, thFile)}
         >
-          Import GeoTIFFs & continue
+          {t("app.photoImportContinue")}
         </button>
       </div>
       {props.log.length > 0 && <div className="log" style={{ marginTop: "1rem" }}>{props.log.join("\n")}</div>}
@@ -668,25 +716,27 @@ function PhotogrammetryPanel(props: {
 }
 
 function ScaffoldStep({ kind }: { kind: "models" | "outputs" | "classification" }) {
-  const [msg, setMsg] = useState("Loading…");
+  const t = useT();
+  const [msg, setMsg] = useState(() => t("common.loading"));
   useEffect(() => {
     const load = async () => {
       if (kind === "models" || kind === "classification") setMsg((await api.ml()).message);
-      else setMsg(`Exports: ${((await api.exports()).files || []).join(", ") || "none yet"}`);
+      else {
+        const files = ((await api.exports()).files || []).join(", ");
+        setMsg(
+          t("app.scaffoldExportsList", {
+            files: files || t("app.scaffoldExportsNone"),
+          }),
+        );
+      }
     };
     load().catch((e) => setMsg(String(e)));
-  }, [kind]);
-  const title =
-    kind === "outputs"
-      ? STEP_LABELS.outputs
-      : kind === "classification"
-        ? STEP_LABELS.classification
-        : STEP_LABELS[kind];
+  }, [kind, t]);
   return (
     <div className="card">
-      <h2>{title}</h2>
+      <h2>{t(`steps.${kind}`)}</h2>
       <p>{msg}</p>
-      <p className="muted">This stage is scaffolded for the next development increment.</p>
+      <p className="muted">{t("app.scaffoldComingSoon")}</p>
     </div>
   );
 }

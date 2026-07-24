@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { api } from "./api";
+import { useT } from "./i18n";
 
 type Basemap = "osm" | "satellite";
 
@@ -12,6 +13,7 @@ function absoluteTileUrl(path: string): string {
 
 /** Lightweight plant overview (photogrammetry step) — full-res XYZ orthos. */
 export function MapView() {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [basemap, setBasemap] = useState<Basemap>("satellite");
@@ -115,20 +117,20 @@ export function MapView() {
     <div className="map-wrap map-wrap-with-dock">
       <div ref={ref} style={{ width: "100%", height: "100%" }} />
       <div className="layer-dock mapview-dock">
-        <div className="basemap-toggle" role="group" aria-label="Basemap">
+        <div className="basemap-toggle" role="group" aria-label={t("map.basemapAria")}>
           <button
             type="button"
             className={basemap === "osm" ? "active" : ""}
             onClick={() => setBasemap("osm")}
           >
-            Streets
+            {t("map.streets")}
           </button>
           <button
             type="button"
             className={basemap === "satellite" ? "active" : ""}
             onClick={() => setBasemap("satellite")}
           >
-            Satellite
+            {t("map.satellite")}
           </button>
         </div>
       </div>

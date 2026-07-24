@@ -249,16 +249,331 @@ button.ghost {
 }
 
 .layer-dock {
-  position: absolute;
-  left: 12px;
-  bottom: 16px;
-  z-index: 2;
-  background: rgba(26, 34, 44, 0.92);
+  /* Participates in .process-dock column (left). */
+  position: static;
+  z-index: auto;
+  width: 100%;
+  flex: 0 0 auto;
+  background: rgba(26, 34, 44, 0.96);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.75rem 0.9rem;
-  width: 200px;
   backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.layer-dock.minimized {
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+}
+
+.layer-dock-header,
+.tool-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.layer-dock-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.icon-btn {
+  padding: 0.15rem 0.4rem !important;
+  min-width: 1.6rem;
+  line-height: 1;
+}
+
+.tool-panel.minimized,
+.panel-inspector.minimized {
+  max-height: none;
+  overflow: hidden;
+  padding: 0.55rem 0.75rem;
+}
+
+.tool-panel-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.tool-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.45rem !important;
+}
+
+.tool-field select {
+  background: var(--bg, #121820);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.45rem;
+}
+
+.map-panel-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  max-width: 280px;
+  padding: 0.55rem 0.7rem;
+  background: rgba(12, 16, 22, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: #e8eef5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.map-panel-tooltip .tip-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.map-panel-tooltip .tip-coords,
+.map-panel-tooltip .tip-hint {
+  margin-top: 0.3rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.thermal-dist-plot {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.thermal-dist-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 220px;
+}
+
+.thermal-dist-plot .dist-title,
+.thermal-dist-plot .dist-mu,
+.thermal-dist-plot .dist-footer {
+  fill: #d8e2ec;
+  font-size: 12px;
+  font-family: system-ui, sans-serif;
+}
+
+.inspector-badges {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.badge-ok {
+  background: rgba(40, 160, 80, 0.25);
+  color: #7dffb0;
+}
+
+.badge-warn {
+  background: rgba(200, 120, 40, 0.25);
+  color: #ffc078;
+}
+
+.badge-info {
+  background: rgba(60, 120, 180, 0.25);
+  color: #9ec8f0;
+}
+
+.inspector-section {
+  margin-bottom: 0.65rem;
+}
+
+.inspector-rgb {
+  width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
+.panel-header-actions {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.thermal-viewer-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin-bottom: 0.45rem;
+}
+
+.thermal-viewer-canvas-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.thermal-viewer-canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: crosshair;
+  image-rendering: pixelated;
+}
+
+.thermal-probe {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.thermal-viewer-footer {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+}
+
+.seg-dock,
+.process-dock {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  bottom: 16px;
+  right: auto;
+  z-index: 3;
+  width: min(400px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  pointer-events: none;
+}
+
+.seg-dock > *,
+.process-dock > * {
+  pointer-events: auto;
+}
+
+.process-dock-section {
+  background: rgba(26, 34, 44, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.seg-dock-section {
+  background: rgba(26, 34, 44, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.seg-dock-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.seg-dock-section.minimized .seg-dock-section-header,
+.process-dock-section.minimized .seg-dock-section-header,
+.process-dock-section.minimized .tool-panel-header,
+.process-dock-section.minimized .layer-dock-header {
+  border-bottom: none;
+}
+
+.seg-dock-section-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.seg-dock-section-body {
+  padding: 0.65rem 0.75rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow: auto;
+}
+
+.seg-dock-controls {
+  flex: 0 1 auto;
+  max-height: 38%;
+}
+
+.seg-dock-histogram {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
+.seg-dock-hist-body {
+  padding-top: 0.4rem;
+}
+
+.seg-dock-inspector {
+  flex: 1 1 auto;
+  min-height: 140px;
+  max-height: 48%;
+}
+
+.seg-dock-inspector.minimized {
+  flex: 0 0 auto;
+  max-height: none;
+  min-height: 0;
+}
+
+.seg-dock-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.seg-dock-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.seg-dock-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.seg-dock-actions .primary {
+  width: 100%;
+}
+
+.seg-tool-panel {
+  width: 340px;
+  max-height: calc(100% - 200px);
 }
 
 .aoi-draw-hint {
@@ -320,8 +635,11 @@ button.ghost {
 }
 
 .mapview-dock {
+  position: absolute;
   bottom: 12px;
   left: 12px;
+  z-index: 2;
+  width: 200px;
 }
 
 .layer-row {
@@ -338,12 +656,14 @@ button.ghost {
 }
 
 .tool-panel {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 2;
-  width: 260px;
-  background: rgba(26, 34, 44, 0.94);
+  position: static;
+  top: auto;
+  right: auto;
+  z-index: auto;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: rgba(26, 34, 44, 0.96);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.9rem 1rem;
@@ -351,8 +671,13 @@ button.ghost {
   flex-direction: column;
   gap: 0.55rem;
   backdrop-filter: blur(8px);
-  max-height: calc(100% - 24px);
+  max-height: none;
   overflow: auto;
+}
+
+.tool-panel.minimized {
+  flex: 0 0 auto;
+  padding: 0.55rem 0.75rem;
 }
 
 .tool-panel h3 {
@@ -435,14 +760,47 @@ button.ghost {
 .panel-inspector {
   position: absolute;
   right: 12px;
+  top: 12px;
   bottom: 16px;
   z-index: 3;
-  width: 320px;
+  width: min(360px, calc(100% - 24px));
+  max-height: none;
+  overflow: auto;
   background: rgba(26, 34, 44, 0.96);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.85rem 1rem;
   backdrop-filter: blur(8px);
+}
+
+.panel-inspector.minimized {
+  top: auto;
+  bottom: 16px;
+  max-height: none;
+  overflow: hidden;
+  padding: 0.55rem 0.75rem;
+}
+
+.panel-inspector.embedded {
+  position: static;
+  width: 100%;
+  max-height: none;
+  height: 100%;
+  overflow: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.55rem 0.75rem 0.75rem;
+  backdrop-filter: none;
+}
+
+.panel-inspector.embedded.minimized {
+  padding: 0;
+}
+
+.panel-inspector.embedded.minimized .panel-inspector-header {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
 }
 
 .panel-inspector-header {

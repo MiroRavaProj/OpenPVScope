@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, AppSettings } from "./api";
+import { APP_LANGUAGES, AppLanguage, isAppLanguage, useI18n, useT } from "./i18n";
 
 type Props = {
   open: boolean;
@@ -8,6 +9,8 @@ type Props = {
 };
 
 export function SettingsModal({ open, onClose, onSaved }: Props) {
+  const t = useT();
+  const { setLanguage } = useI18n();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,12 +34,12 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
       <div className="modal-backdrop" onClick={onClose}>
         <div className="modal-card settings-modal" onClick={(e) => e.stopPropagation()}>
           <div className="modal-header">
-            <h2>Settings</h2>
+            <h2>{t("settings.title")}</h2>
             <button type="button" className="ghost" onClick={onClose}>
-              Close
+              {t("common.close")}
             </button>
           </div>
-          <div style={{ padding: "1rem" }}>{error || "Loading…"}</div>
+          <div style={{ padding: "1rem" }}>{error || t("common.loading")}</div>
         </div>
       </div>
     );
@@ -46,12 +49,14 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
     setBusy(true);
     setError(null);
     try {
+      const lang: AppLanguage = isAppLanguage(settings!.language) ? settings!.language : "en";
       const patch: Parameters<typeof api.putSettings>[0] = {
         history_max_steps: settings!.history_max_steps,
         history_include_rasters: settings!.history_include_rasters,
         default_project_dir: settings!.default_project_dir,
         recent_max: settings!.recent_max,
         opsz_default_mode: settings!.opsz_default_mode,
+        language: lang,
         opsz_light_exclude: excludeText
           .split(/\r?\n/)
           .map((l) => l.trim())
@@ -63,6 +68,7 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
       }
       const s = await api.putSettings(patch);
       setSettings(s);
+      if (isAppLanguage(s.language)) setLanguage(s.language);
       onSaved?.(s);
       onClose();
     } catch (e) {
@@ -99,20 +105,37 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
       <div className="modal-card settings-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <h2>Settings</h2>
+            <h2>{t("settings.title")}</h2>
             <p className="muted" style={{ margin: 0 }}>
-              App-wide preferences (not tied to a single project).
+              {t("settings.subtitle")}
             </p>
           </div>
           <button type="button" className="ghost" onClick={onClose}>
-            Close
+            {t("common.close")}
           </button>
         </div>
         <div className="settings-body">
           {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
 
-          <label className="settings-field">
-            <span>Undo history length</span>
+          <label className="settings-field" title={t("settings.languageTitle")}>
+            <span>{t("settings.language")}</span>
+            <select
+              value={isAppLanguage(settings.language) ? settings.language : "en"}
+              onChange={(e) => {
+                const lang = e.target.value as AppLanguage;
+                setSettings({ ...settings, language: lang });
+              }}
+            >
+              {APP_LANGUAGES.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.nativeLabel}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="settings-field" title={t("settings.historyLengthTitle")}>
+            <span>{t("settings.historyLength")}</span>
             <input
               type="number"
               min={1}
@@ -122,10 +145,10 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                 setSettings({ ...settings, history_max_steps: Number(e.target.value) || 1 })
               }
             />
-            <span className="muted">How many Back steps to keep (Ctrl+Z).</span>
+            <span className="muted">{t("settings.historyLengthHint")}</span>
           </label>
 
-          <label className="settings-field row-check">
+          <label className="settings-field row-check" title={t("settings.includeRastersTitle")}>
             <input
               type="checkbox"
               checked={settings.history_include_rasters}
@@ -133,16 +156,12 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                 setSettings({ ...settings, history_include_rasters: e.target.checked })
               }
             />
-            <span>Include orthophoto rasters in undo history</span>
+            <span>{t("settings.includeRasters")}</span>
           </label>
-          <p className="muted settings-hint">
-            Needed to undo alignment / GeoTIFF imports. History uses content-addressable
-            storage (unchanged files are stored once). Keep{" "}
-            <code>.openpvscope_history</code> on the same drive as the project.
-          </p>
+          <p className="muted settings-hint">{t("settings.rastersHint")}</p>
 
-          <label className="settings-field">
-            <span>Default project parent folder</span>
+          <label className="settings-field" title={t("settings.defaultFolderTitle")}>
+            <span>{t("settings.defaultParentFolder")}</span>
             <div className="row">
               <input
                 type="text"
@@ -153,11 +172,11 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                     default_project_dir: e.target.value.trim() || null,
                   })
                 }
-                placeholder="Optional — pre-fills New project"
+                placeholder={t("settings.defaultFolderPlaceholder")}
                 style={{ flex: 1, minWidth: 200 }}
               />
               <button type="button" onClick={browseDefault} disabled={busy}>
-                Browse…
+                {t("common.browse")}
               </button>
               <button
                 type="button"
@@ -165,13 +184,13 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                 disabled={busy || !settings.default_project_dir}
                 onClick={() => setSettings({ ...settings, default_project_dir: null })}
               >
-                Clear
+                {t("common.clear")}
               </button>
             </div>
           </label>
 
-          <label className="settings-field">
-            <span>Recent projects to keep</span>
+          <label className="settings-field" title={t("settings.recentMaxTitle")}>
+            <span>{t("settings.recentMax")}</span>
             <input
               type="number"
               min={0}
@@ -183,8 +202,8 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
             />
           </label>
 
-          <label className="settings-field">
-            <span>Default .opsz export mode</span>
+          <label className="settings-field" title={t("settings.opszDefaultModeTitle")}>
+            <span>{t("settings.opszDefaultMode")}</span>
             <select
               value={settings.opsz_default_mode}
               onChange={(e) =>
@@ -194,13 +213,13 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                 })
               }
             >
-              <option value="full">Full (everything except undo history)</option>
-              <option value="light">Light (skip work/ + photogrammetry/)</option>
+              <option value="full">{t("settings.opszFull")}</option>
+              <option value="light">{t("settings.opszLight")}</option>
             </select>
           </label>
 
-          <label className="settings-field">
-            <span>Light export exclude prefixes (one per line)</span>
+          <label className="settings-field" title={t("settings.lightExcludeTitle")}>
+            <span>{t("settings.lightExclude")}</span>
             <textarea
               rows={4}
               value={excludeText}
@@ -211,16 +230,16 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
 
           <div className="row" style={{ marginTop: "0.5rem" }}>
             <button type="button" className="ghost" disabled={busy} onClick={clearRecent}>
-              Clear recent projects
+              {t("settings.clearRecent")}
             </button>
           </div>
         </div>
         <div className="settings-footer">
           <button type="button" className="ghost" onClick={onClose} disabled={busy}>
-            Cancel
+            {t("common.cancel")}
           </button>
           <button type="button" className="primary" onClick={save} disabled={busy}>
-            Save settings
+            {t("settings.save")}
           </button>
         </div>
       </div>

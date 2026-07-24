@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import { useT } from "./i18n";
+import { useMinimized } from "./ui/useMinimized";
 
 export type DetectModality = "rgb" | "thermal";
 export type DetectRunMode = "rgb" | "thermal" | "both";
@@ -34,11 +36,14 @@ export function DetectionTools(props: {
     displayConfidenceThermal,
     setDisplayConfidenceThermal,
   } = props;
+  const t = useT();
   const [rows, setRows] = useState(4);
   const [cols, setCols] = useState(10);
   // Legacy suite defaults (per-modality template_matching_threshold)
   const [confidenceRgb, setConfidenceRgb] = useState(0.5);
   const [confidenceThermal, setConfidenceThermal] = useState(0.5);
+  const [advancedValidation, setAdvancedValidation] = useState(true);
+  const [fineTuneConf, setFineTuneConf] = useState(0.65);
   const [nms, setNms] = useState(0.05);
   const [numTemplates, setNumTemplates] = useState(0); // 0 = all grid cells
   const [thermalCap, setThermalCap] = useState(45);
@@ -155,6 +160,8 @@ export function DetectionTools(props: {
         nms_iou: nms,
         num_templates: numTemplates,
         thermal_temp_cap: thermalCap,
+        advanced_validation: advancedValidation,
+        fine_tuning_confidence: fineTuneConf,
       });
       setRunning(true);
     } catch (e) {
@@ -181,53 +188,66 @@ export function DetectionTools(props: {
   const bothGridsReady = hasRgbGrid && hasThermalGrid;
   const tplHint =
     numTemplates <= 0
-      ? `all ${gridCellCount || "grid"} cells`
-      : `${Math.min(numTemplates, gridCellCount || numTemplates)} of ${gridCellCount || "?"}`;
+      ? t("detection.templatesAll", { count: gridCellCount || "grid" })
+      : t("detection.templatesSome", {
+          n: Math.min(numTemplates, gridCellCount || numTemplates),
+          total: gridCellCount || "?",
+        });
+  const [toolsMin, setToolsMin] = useMinimized("det-tools", false);
 
   return (
-    <div className="tool-panel">
-      <h3>Detection</h3>
-      <p className="muted tool-hint">
-        Full-ortho deskew + multi-template match. AOI/grid set angle and templates only. Confirm runs
-        RGB + Thermal.
-      </p>
+    <div className={`tool-panel process-dock-section ${toolsMin ? "minimized" : "expanded"}`}>
+      <div className="tool-panel-header">
+        <h3>{t("detection.title")}</h3>
+        <button
+          type="button"
+          className="ghost icon-btn"
+          title={toolsMin ? t("detection.expand") : t("detection.minimize")}
+          onClick={() => setToolsMin(!toolsMin)}
+        >
+          {toolsMin ? "▸" : "▾"}
+        </button>
+      </div>
+      {!toolsMin && (
+        <>
+      <p className="muted tool-hint">{t("detection.hint")}</p>
       <p className="muted tool-hint">{status}</p>
 
       <div
         className="basemap-toggle"
         role="group"
-        aria-label="Edit modality"
-        title="Which modality’s AOI/grid you are editing. Switching also toggles orthomosaic opacity (RGB↔Thermal)."
+        aria-label={t("detection.modalityAria")}
+        title={t("detection.modalityGroupTitle")}
       >
         <button
           type="button"
           className={modality === "rgb" ? "active" : ""}
-          title="Edit RGB AOI and grid. Sets RGB orthomosaic to full opacity."
+          title={t("detection.rgbTitle")}
           onClick={() => {
             setModality("rgb");
             setEditCorners(false);
             setDrawEnabled(false);
           }}
         >
-          RGB
+          {t("detection.rgb")}
         </button>
         <button
           type="button"
           className={modality === "thermal" ? "active" : ""}
-          title="Edit thermal AOI and grid. Sets thermal orthomosaic to full opacity."
+          title={t("detection.thermalTitle")}
           onClick={() => {
             setModality("thermal");
             setEditCorners(false);
             setDrawEnabled(false);
           }}
         >
-          Thermal
+          {t("detection.thermal")}
         </button>
       </div>
 
       <label
         className="tool-field row-check"
-        title="Click four corners on the map to define the panel-block frame (AOI) for the active modality. Saved automatically on the 4th click."
+        title={t("detection.drawFrameTitle")}
       >
         <input
           type="checkbox"
@@ -237,12 +257,12 @@ export function DetectionTools(props: {
             if (e.target.checked) setEditCorners(false);
           }}
         />
-        <span>Draw frame (4 corners)</span>
+        <span>{t("detection.drawFrame")}</span>
       </label>
 
       <label
         className="tool-field row-check"
-        title="Drag the four AOI corner handles on the map. On release, the grid is regenerated for the active modality."
+        title={t("detection.editCornersTitle")}
       >
         <input
           type="checkbox"
@@ -253,18 +273,18 @@ export function DetectionTools(props: {
             if (e.target.checked) setDrawEnabled(false);
           }}
         />
-        <span>Edit frame corners</span>
+        <span>{t("detection.editCorners")}</span>
       </label>
 
       <div
         className="tool-grid2"
-        title="Seed grid size inside the AOI. Rows × cols cells are used as panel templates (or a subset if Templates > 0)."
+        title={t("detection.gridSizeTitle")}
       >
         <label
           className="tool-field"
-          title="Number of panel rows in the seed grid (along the short side of the AOI)."
+          title={t("detection.rowsTitle")}
         >
-          Rows
+          {t("detection.rows")}
           <input
             type="number"
             min={1}
@@ -275,9 +295,9 @@ export function DetectionTools(props: {
         </label>
         <label
           className="tool-field"
-          title="Number of panel columns in the seed grid (along the long side of the AOI)."
+          title={t("detection.colsTitle")}
         >
-          Cols
+          {t("detection.cols")}
           <input
             type="number"
             min={1}
@@ -291,26 +311,26 @@ export function DetectionTools(props: {
       <button
         type="button"
         disabled={busy || !hasAoi}
-        title={`Build a ${rows}×${cols} seed grid inside the ${modality.toUpperCase()} AOI. Deskew angle comes from the AOI; templates are cut from these cells.`}
+        title={t("detection.generateGridTitle", { rows, cols, modality: modality.toUpperCase() })}
         onClick={generateGrid}
       >
-        Generate grid ({modality.toUpperCase()})
+        {t("detection.generateGrid", { modality: modality.toUpperCase() })}
       </button>
 
       <button
         type="button"
         disabled={busy || !hasRgbGrid}
-        title="Copy the RGB AOI + grid into the thermal modality (same corners/cells in WGS84). Then tweak thermal corners if needed."
+        title={t("detection.copyRgbThermalTitle")}
         onClick={copyToThermal}
       >
-        Copy RGB → Thermal
+        {t("detection.copyRgbThermal")}
       </button>
 
       <label
         className="tool-field"
-        title="RGB match threshold (0–1). Peaks below this are discarded during RGB detection. Default 0.5. Thermal often needs a lower value because grayscale scores run lower than multi-channel RGB."
+        title={t("detection.confRgbTitle")}
       >
-        RGB match confidence
+        {t("detection.confRgb")}
         <input
           type="number"
           min={0.1}
@@ -322,9 +342,9 @@ export function DetectionTools(props: {
       </label>
       <label
         className="tool-field"
-        title="Thermal match threshold (0–1). Independent of RGB. Default 0.5 (same as legacy suite). Lower if thermal boxes disappear while RGB looks fine."
+        title={t("detection.confThermalTitle")}
       >
-        Thermal match confidence
+        {t("detection.confThermal")}
         <input
           type="number"
           min={0.1}
@@ -336,9 +356,9 @@ export function DetectionTools(props: {
       </label>
       <label
         className="tool-field"
-        title="Non-maximum suppression IoU. Overlapping boxes with IoU above this are merged (higher score wins). Lower = keep more nearby boxes. Default 0.05."
+        title={t("detection.nmsTitle")}
       >
-        NMS IoU (default 0.05)
+        {t("detection.nms")}
         <input
           type="number"
           min={0.01}
@@ -350,9 +370,9 @@ export function DetectionTools(props: {
       </label>
       <label
         className="tool-field"
-        title="How many grid cells to use as templates. 0 = ALL cells (slowest, best coverage on large plants). Higher variety of templates helps when panels look different across the plant."
+        title={t("detection.templatesTitle")}
       >
-        Templates (0 = all grid cells → {tplHint})
+        {t("detection.templates", { hint: tplHint })}
         <input
           type="number"
           min={0}
@@ -364,9 +384,9 @@ export function DetectionTools(props: {
       </label>
       <label
         className="tool-field"
-        title="Thermal only: clamp temperatures above this °C when building the search image (hot outliers). Does not affect RGB. Default 45°C."
+        title={t("detection.tempCapTitle")}
       >
-        Thermal temp cap °C (default 45)
+        {t("detection.tempCap")}
         <input
           type="number"
           min={10}
@@ -377,10 +397,36 @@ export function DetectionTools(props: {
         />
       </label>
       <label
-        className="tool-field"
-        title="Map-only filter for blue (RGB) boxes. Does not re-run detection. Default 0.7 (legacy visualization filter)."
+        className="tool-field tool-check"
+        title={t("detection.advancedValidationTitle")}
       >
-        Map filter RGB ≥ {displayConfidenceRgb.toFixed(2)}
+        <input
+          type="checkbox"
+          checked={advancedValidation}
+          onChange={(e) => setAdvancedValidation(e.target.checked)}
+        />
+        {t("detection.advancedValidation")}
+      </label>
+      <label
+        className="tool-field"
+        title={t("detection.fineTuneTitle")}
+      >
+        {t("detection.fineTune")}
+        <input
+          type="number"
+          min={0.1}
+          max={0.99}
+          step={0.01}
+          value={fineTuneConf}
+          disabled={!advancedValidation}
+          onChange={(e) => setFineTuneConf(Number(e.target.value))}
+        />
+      </label>
+      <label
+        className="tool-field"
+        title={t("detection.mapFilterRgbTitle")}
+      >
+        {t("detection.mapFilterRgb", { value: displayConfidenceRgb.toFixed(2) })}
         <input
           type="range"
           min={0}
@@ -392,9 +438,9 @@ export function DetectionTools(props: {
       </label>
       <label
         className="tool-field"
-        title="Map-only filter for orange (thermal) boxes. Does not re-run detection. Default 0.7. Thermal scores are often lower — lower this slider to show more thermal panels."
+        title={t("detection.mapFilterThermalTitle")}
       >
-        Map filter Thermal ≥ {displayConfidenceThermal.toFixed(2)}
+        {t("detection.mapFilterThermal", { value: displayConfidenceThermal.toFixed(2) })}
         <input
           type="range"
           min={0}
@@ -409,31 +455,27 @@ export function DetectionTools(props: {
         type="button"
         className="primary"
         disabled={busy || running || !bothGridsReady}
-        title={
-          bothGridsReady
-            ? "Run full-ortho deskew + multi-template matching on both RGB and thermal. Progress appears in the activity console (Verbose for per-template detail)."
-            : "Confirm both RGB and thermal grids first (generate RGB grid, then Copy RGB → Thermal or generate thermal separately)."
-        }
+        title={bothGridsReady ? t("detection.runTitleReady") : t("detection.runTitleBlocked")}
         onClick={runDetect}
       >
-        {running ? "Detecting RGB + Thermal…" : "Confirm & detect (RGB + Thermal)"}
+        {running ? t("detection.running") : t("detection.run")}
       </button>
 
       <div
         className="detection-counts"
-        title="Panel counts after the last detection run (all saved boxes, before map filter)."
+        title={t("detection.countsTitle")}
       >
         <span className="legend-item">
           <i className="legend-swatch legend-swatch-rgb" aria-hidden />
-          RGB (blue): {rgbCount}
+          {t("detection.legendRgb", { count: rgbCount })}
         </span>
         <span className="legend-item">
           <i className="legend-swatch legend-swatch-thermal" aria-hidden />
-          Thermal (orange): {thermalCount}
+          {t("detection.legendThermal", { count: thermalCount })}
         </span>
         <span className="muted" style={{ fontSize: "0.8rem" }}>
-          {hasRgbGrid ? "RGB grid ✓" : "RGB grid ✗"} ·{" "}
-          {hasThermalGrid ? "Thermal grid ✓" : "Thermal grid ✗"}
+          {hasRgbGrid ? t("detection.gridRgbOk") : t("detection.gridRgbMissing")} ·{" "}
+          {hasThermalGrid ? t("detection.gridThermalOk") : t("detection.gridThermalMissing")}
         </span>
       </div>
 
@@ -441,11 +483,13 @@ export function DetectionTools(props: {
         type="button"
         className="ghost"
         disabled={busy}
-        title={`Delete AOI, grid, and panels for ${modality.toUpperCase()} only. The other modality is left untouched.`}
+        title={t("detection.clearTitle", { modality: modality.toUpperCase() })}
         onClick={clearAll}
       >
-        Clear ({modality.toUpperCase()})
+        {t("detection.clear", { modality: modality.toUpperCase() })}
       </button>
+        </>
+      )}
     </div>
   );
 }

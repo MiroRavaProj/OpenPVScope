@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ProjectPayload } from "./api";
 import { useConsole } from "./ActivityConsole";
+import { useT } from "./i18n";
 
 type Pt = { x: number; y: number };
 
@@ -31,6 +32,7 @@ function OrthoPane(props: {
   accent?: string;
   readOnly?: boolean;
 }) {
+  const t = useT();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -253,7 +255,7 @@ function OrthoPane(props: {
             +
           </button>
           <button type="button" onClick={fitToView}>
-            Fit
+            {t("alignment.fit")}
           </button>
         </div>
       </div>
@@ -295,11 +297,13 @@ function OrthoPane(props: {
             <span className="point-marker-label">{i + 1}</span>
           </div>
         ))}
-        {!hiRes && !loading && <div className="ortho-empty muted">Waiting for orthophoto…</div>}
+        {!hiRes && !loading && (
+          <div className="ortho-empty muted">{t("alignment.waitingOrtho")}</div>
+        )}
       </div>
       <div className="ortho-hint muted">
-        Scroll = zoom · Shift/Alt+drag or middle-click = pan
-        {!props.readOnly && ` · Click = point ${props.points.length}/4`}
+        {t("alignment.paneHint")}
+        {!props.readOnly && ` ${t("alignment.paneHintClick", { n: props.points.length })}`}
       </div>
     </div>
   );
@@ -316,6 +320,7 @@ function OverlayConfirmModal(props: {
   busy: boolean;
   title?: string;
 }) {
+  const t = useT();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -517,25 +522,25 @@ function OverlayConfirmModal(props: {
       <div className="modal-card overlay-modal">
         <div className="modal-header">
           <div>
-            <h2>{props.title ?? "Confirm ortho alignment"}</h2>
+            <h2>{props.title ?? t("alignment.modalConfirmTitle")}</h2>
             <p className="muted" style={{ margin: 0 }}>
-              Check the overlay. Drag to pan, scroll to zoom. Adjust opacities (default 50%).
-              {loading ? " Loading tiles…" : ""}
+              {t("alignment.modalHint")}
+              {loading ? ` ${t("alignment.modalLoadingTiles")}` : ""}
             </p>
           </div>
           <div className="row">
             <button type="button" onClick={props.onCancel} disabled={props.busy}>
-              Back to editing
+              {t("alignment.modalBack")}
             </button>
             <button type="button" className="primary" onClick={props.onConfirm} disabled={props.busy}>
-              {props.busy ? "Saving…" : "Save alignment"}
+              {props.busy ? t("alignment.modalSaving") : t("alignment.modalSave")}
             </button>
           </div>
         </div>
 
         <div className="overlay-controls row">
           <label className="opacity-label">
-            RGB {rgbOpacity}%
+            {t("alignment.modalRgbOpacity", { pct: rgbOpacity })}
             <input
               type="range"
               min={0}
@@ -545,7 +550,7 @@ function OverlayConfirmModal(props: {
             />
           </label>
           <label className="opacity-label">
-            Thermal {thermalOpacity}%
+            {t("alignment.modalThermalOpacity", { pct: thermalOpacity })}
             <input
               type="range"
               min={0}
@@ -555,7 +560,7 @@ function OverlayConfirmModal(props: {
             />
           </label>
           <button type="button" onClick={() => fitToView()}>
-            Fit
+            {t("alignment.fit")}
           </button>
         </div>
 
@@ -569,21 +574,23 @@ function OverlayConfirmModal(props: {
         >
           {loadError && (
             <div className="overlay-error">
-              <strong>Could not load overlay</strong>
+              <strong>{t("alignment.modalLoadError")}</strong>
               <p>{loadError}</p>
               <button type="button" onClick={() => void refresh()}>
-                Retry
+                {t("alignment.modalRetry")}
               </button>
             </div>
           )}
           {!loadError && !frame && (
-            <div className="ortho-empty muted">{loading || !ready ? "Loading overlay…" : "No tiles"}</div>
+            <div className="ortho-empty muted">
+              {loading || !ready ? t("alignment.modalLoadingOverlay") : t("alignment.modalNoTiles")}
+            </div>
           )}
           {frame && rgbUrl && (
             <img
               className="ortho-hires"
               src={rgbUrl}
-              alt="RGB"
+              alt={t("alignment.modalAltRgb")}
               draggable={false}
               style={{
                 left: offset.x + frame.col * scale,
@@ -598,7 +605,7 @@ function OverlayConfirmModal(props: {
             <img
               className="ortho-hires"
               src={thUrl}
-              alt="Thermal aligned"
+              alt={t("alignment.modalAltThermal")}
               draggable={false}
               style={{
                 left: offset.x + frame.col * scale,
@@ -621,6 +628,7 @@ export function OrthoAlignmentView(props: {
   onApplied: (p: ProjectPayload) => void;
   onError: (msg: string) => void;
 }) {
+  const t = useT();
   const { noteLocal } = useConsole();
   const [refPts, setRefPts] = useState<Pt[]>([]);
   const [tgtPts, setTgtPts] = useState<Pt[]>([]);
@@ -674,11 +682,11 @@ export function OrthoAlignmentView(props: {
 
   async function preview() {
     if (refPts.length < 4 || tgtPts.length < 4) {
-      props.onError("Place 4 corresponding points (1–4) on both RGB and thermal orthophotos.");
+      props.onError(t("alignment.errorNeed4Points"));
       return;
     }
     setBusy(true);
-    noteLocal("Ortho alignment preview", "Computing transform and writing aligned GeoTIFF…");
+    noteLocal(t("alignment.consolePreviewTitle"), t("alignment.consolePreviewDetail"));
     try {
       const p = await api.previewAlignment(
         refPts.map((pt) => [pt.x, pt.y]),
@@ -697,12 +705,12 @@ export function OrthoAlignmentView(props: {
 
   async function confirm() {
     setBusy(true);
-    noteLocal("Saving alignment", "Marking ortho alignment complete…");
+    noteLocal(t("alignment.consoleSaveTitle"), t("alignment.consoleSaveDetail"));
     try {
       const p = await api.confirmAlignment();
       setAlignmentDone(true);
       setShowConfirm(false);
-      setStatusMsg("Thermal georef aligned to RGB");
+      setStatusMsg(t("alignment.statusAligned"));
       props.onApplied(p);
     } catch (e) {
       props.onError(String(e));
@@ -714,27 +722,23 @@ export function OrthoAlignmentView(props: {
   return (
     <div className="ortho-alignment">
       <div className="card" style={{ marginBottom: "1rem", maxWidth: "none" }}>
-        <h2>Ortho alignment</h2>
+        <h2>{t("alignment.title")}</h2>
         {alignmentDone ? (
           <p>
-            <strong style={{ color: "var(--accent)" }}>Alignment saved.</strong>{" "}
+            <strong style={{ color: "var(--accent)" }}>{t("alignment.saved")}</strong>{" "}
             {statusMsg ? `${statusMsg}. ` : ""}
-            Control points below are restored from the project. You can review the overlay or redo
-            the points.
+            {t("alignment.savedBody")}
           </p>
         ) : (
-          <p>
-            Place four homologous control points (1–4) on RGB and thermal. Zoom reads from the full
-            GeoTIFF. You will confirm the result on an overlay before saving.
-          </p>
+          <p>{t("alignment.intro")}</p>
         )}
         <div className="row">
           <span className="muted">
-            RGB {refPts.length}/4 · Thermal {tgtPts.length}/4
+            {t("alignment.progress", { rgb: refPts.length, thermal: tgtPts.length })}
             {meta.rgb.width > 0
               ? ` · ${meta.rgb.width}×${meta.rgb.height} / ${meta.thermal.width}×${meta.thermal.height} px`
               : ""}
-            {alignmentDone ? " · status: done" : ""}
+            {alignmentDone ? ` ${t("alignment.statusDone")}` : ""}
           </span>
           <button
             type="button"
@@ -744,7 +748,7 @@ export function OrthoAlignmentView(props: {
               setAlignmentDone(false);
             }}
           >
-            Reset points
+            {t("alignment.resetPoints")}
           </button>
           {alignmentDone && (
             <button
@@ -752,7 +756,7 @@ export function OrthoAlignmentView(props: {
               disabled={busy || !meta.rgb.transform.length}
               onClick={() => setShowConfirm(true)}
             >
-              Review overlay
+              {t("alignment.reviewOverlay")}
             </button>
           )}
           <button
@@ -761,13 +765,13 @@ export function OrthoAlignmentView(props: {
             disabled={busy || refPts.length < 4 || tgtPts.length < 4}
             onClick={preview}
           >
-            {alignmentDone ? "Re-preview alignment" : "Preview alignment"}
+            {alignmentDone ? t("alignment.rePreview") : t("alignment.preview")}
           </button>
         </div>
       </div>
       <div className="align-grid">
         <OrthoPane
-          title="RGB (reference)"
+          title={t("alignment.paneRgb")}
           layerId="rgb"
           imageWidth={meta.rgb.width}
           imageHeight={meta.rgb.height}
@@ -776,7 +780,7 @@ export function OrthoAlignmentView(props: {
           onAddPoint={(pt) => setRefPts((p) => (p.length >= 4 ? p : [...p, pt]))}
         />
         <OrthoPane
-          title="Thermal (target)"
+          title={t("alignment.paneThermal")}
           layerId="thermal"
           imageWidth={meta.thermal.width}
           imageHeight={meta.thermal.height}
@@ -793,7 +797,7 @@ export function OrthoAlignmentView(props: {
           rgbTransform={meta.rgb.transform}
           cacheKey={cacheKey}
           busy={busy}
-          title={alignmentDone ? "Review ortho alignment" : "Confirm ortho alignment"}
+          title={alignmentDone ? t("alignment.modalReviewTitle") : t("alignment.modalConfirmTitle")}
           onCancel={() => setShowConfirm(false)}
           onConfirm={confirm}
         />

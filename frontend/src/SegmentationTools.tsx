@@ -1,126 +1,56 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, GeoJsonFc } from "./api";
+import { useT } from "./i18n";
+import { ThermalDistributionPlot } from "./segmentation/ThermalDistributionPlot";
+import {
+  collectIndicatorValues,
+  ColorRange,
+  LABELABLE_INDICATORS,
+  percentileRange,
+  THERMAL_INDICATORS,
+  ThermalIndicator,
+} from "./segmentation/thermalColor";
+import { useMinimized } from "./ui/useMinimized";
 
-export function PanelInspector(props: {
-  panelId: string | null;
-  onClose: () => void;
-}) {
-  const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+const INDICATOR_KEY: Record<ThermalIndicator, string> = {
+  max_temperature: "segmentation.indicatorMax",
+  min_temperature: "segmentation.indicatorMin",
+  mean_temperature: "segmentation.indicatorMean",
+  median_temperature: "segmentation.indicatorMedian",
+  std_temperature: "segmentation.indicatorStd",
+  var_temperature: "segmentation.indicatorVariance",
+};
 
-  useEffect(() => {
-    if (!props.panelId) {
-      setMeta(null);
-      return;
-    }
-    let cancelled = false;
-    setErr(null);
-    api
-      .segmentationPanelMeta(props.panelId)
-      .then((m) => {
-        if (!cancelled) setMeta(m);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setMeta(null);
-          setErr(String(e));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [props.panelId]);
-
-  if (!props.panelId) return null;
-
-  const stats = meta as {
-    mean_temperature?: number | null;
-    min_temperature?: number | null;
-    max_temperature?: number | null;
-    median_temperature?: number | null;
-    std_temperature?: number | null;
-    var_temperature?: number | null;
-    confidence?: number | null;
-    iou?: number | null;
-    distance_m?: number | null;
-  } | null;
-
-  return (
-    <div className="panel-inspector">
-      <div className="panel-inspector-header">
-        <strong>Panel {props.panelId}</strong>
-        <button type="button" className="ghost" onClick={props.onClose}>
-          Close
-        </button>
-      </div>
-      {err && <p className="muted">{err}</p>}
-      <div className="inspector-thumbs">
-        <div>
-          <div className="muted">RGB</div>
-          <img src={api.segmentationPreviewUrl(props.panelId, "rgb")} alt="RGB crop" />
-        </div>
-        <div>
-          <div className="muted">Thermal</div>
-          <img src={api.segmentationPreviewUrl(props.panelId, "thermal")} alt="Thermal crop" />
-        </div>
-      </div>
-      {stats && (
-        <dl className="inspector-stats">
-          <div>
-            <dt>Mean °C</dt>
-            <dd>{fmt(stats.mean_temperature)}</dd>
-          </div>
-          <div>
-            <dt>Min / Max</dt>
-            <dd>
-              {fmt(stats.min_temperature)} / {fmt(stats.max_temperature)}
-            </dd>
-          </div>
-          <div>
-            <dt>Median / Std</dt>
-            <dd>
-              {fmt(stats.median_temperature)} / {fmt(stats.std_temperature)}
-            </dd>
-          </div>
-          <div>
-            <dt>Variance</dt>
-            <dd>{fmt(stats.var_temperature)}</dd>
-          </div>
-          <div>
-            <dt>Match IoU / m</dt>
-            <dd>
-              {fmt(stats.iou)} / {fmt(stats.distance_m)}
-            </dd>
-          </div>
-          <div>
-            <dt>Confidence</dt>
-            <dd>{fmt(stats.confidence)}</dd>
-          </div>
-        </dl>
-      )}
-    </div>
-  );
-}
-
-function fmt(v: number | null | undefined) {
-  if (v == null || Number.isNaN(v)) return "—";
-  return typeof v === "number" ? v.toFixed(2) : String(v);
-}
+export type SegColorState = {
+  thermalColoring: boolean;
+  indicator: ThermalIndicator;
+  colorRange: ColorRange | null;
+  pairsFc: GeoJsonFc | null;
+};
 
 export function SegmentationTools(props: {
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
   onRefreshMap: () => void;
   onProjectRefresh: () => void;
   onError: (msg: string) => void;
+  colorState: SegColorState;
+  onColorStateChange: (patch: Partial<SegColorState>) => void;
 }) {
-  const { onRefreshMap, onProjectRefresh, onError } = props;
+  const { onRefreshMap, onProjectRefresh, onError, colorState, onColorStateChange } = props;
+  const t = useT();
   const [status, setStatus] = useState("");
   const [count, setCount] = useState(0);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [margin, setMargin] = useState(0.2);
   const [minIou, setMinIou] = useState(0.1);
+  const [labelMsg, setLabelMsg] = useState<string | null>(null);
+  const [controlsMin, setControlsMin] = useMinimized("seg-controls", false);
+  const [histMin, setHistMin] = useMinimized("seg-histogram", false);
+
+  const values = useMemo(() => {
+    if (!colorState.pairsFc) return [];
+    return collectIndicatorValues(colorState.pairsFc.features || [], colorState.indicator);
+  }, [colorState.pairsFc, colorState.indicator]);
 
   const refresh = useCallback(async () => {
     try {
@@ -128,10 +58,17 @@ export function SegmentationTools(props: {
       setStatus(st.message);
       setCount(st.pair_count);
       setRunning(Boolean(st.job?.running));
+      if (st.pair_count > 0) {
+        const fc = await api.segmentationPairsGeojson();
+        const vals = collectIndicatorValues(fc.features || [], colorState.indicator);
+        const range = colorState.colorRange ?? percentileRange(vals);
+        onColorStateChange({ pairsFc: fc, colorRange: range });
+      }
     } catch (e) {
       onError(String(e));
     }
-  }, [onError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onError, onColorStateChange]);
 
   useEffect(() => {
     void refresh();
@@ -167,8 +104,19 @@ export function SegmentationTools(props: {
     };
   }, [running, refresh, onRefreshMap, onProjectRefresh, onError]);
 
+  function setIndicator(ind: ThermalIndicator) {
+    const vals = colorState.pairsFc
+      ? collectIndicatorValues(colorState.pairsFc.features || [], ind)
+      : [];
+    onColorStateChange({
+      indicator: ind,
+      colorRange: percentileRange(vals),
+    });
+  }
+
   async function run() {
     setBusy(true);
+    setLabelMsg(null);
     try {
       await api.runSegmentation({
         margin_factor: margin,
@@ -183,54 +131,173 @@ export function SegmentationTools(props: {
     }
   }
 
+  async function saveLabels() {
+    if (!colorState.colorRange) return;
+    if (!LABELABLE_INDICATORS.includes(colorState.indicator)) return;
+    setBusy(true);
+    setLabelMsg(null);
+    try {
+      const r = await api.saveSegmentationLabels({
+        indicator: colorState.indicator,
+        green: colorState.colorRange.min,
+        red: colorState.colorRange.max,
+      });
+      setLabelMsg(
+        t("segmentation.labelsSaved", {
+          labeled: r.labeled,
+          label0: r.label_0,
+          labelMid: r.label_mid,
+          label1: r.label_1,
+        }),
+      );
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canLabel =
+    colorState.thermalColoring &&
+    LABELABLE_INDICATORS.includes(colorState.indicator) &&
+    colorState.colorRange != null &&
+    count > 0;
+
+  const hasPairs = count > 0 && colorState.colorRange != null;
+
   return (
     <>
-      <div className="tool-panel">
-        <h3>Segmentation</h3>
-        <p className="muted tool-hint">{status}</p>
-        <p className="muted tool-hint">
-          Pairs each RGB detection to the nearest overlapping thermal panel, then extracts deskewed
-          crops. Thermal stats use the exact panel (no margin), full resolution.
-        </p>
-        <label
-          className="tool-field"
-          title="Extra border around the deskewed preview crop (0.2 = 20% of panel size each side). Stats ignore this."
-        >
-          Preview margin
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={margin}
-            disabled={busy || running}
-            onChange={(e) => setMargin(Number(e.target.value))}
-          />
-        </label>
-        <label
-          className="tool-field"
-          title="Minimum center IoU between RGB and thermal panels to accept a pair (legacy default 0.1)."
-        >
-          Min pair IoU
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={minIou}
-            disabled={busy || running}
-            onChange={(e) => setMinIou(Number(e.target.value))}
-          />
-        </label>
-        <button type="button" className="primary" disabled={busy || running} onClick={run}>
-          {running ? "Extracting…" : "Run pairing & extract"}
-        </button>
-        <div className="muted" style={{ fontSize: "0.85rem" }}>
-          Pairs: {count}
+      <section className={`process-dock-section seg-dock-controls ${controlsMin ? "minimized" : ""}`}>
+        <div className="seg-dock-section-header">
+          <h3>{t("segmentation.title")}</h3>
+          <button
+            type="button"
+            className="ghost icon-btn"
+            title={controlsMin ? t("segmentation.expandControls") : t("segmentation.minimizeControls")}
+            onClick={() => setControlsMin(!controlsMin)}
+          >
+            {controlsMin ? "▸" : "▾"}
+          </button>
         </div>
-        <p className="muted tool-hint">Click a panel on the map to inspect crops and stats.</p>
-      </div>
-      <PanelInspector panelId={props.selectedId} onClose={() => props.onSelect(null)} />
+        {!controlsMin && (
+          <div className="seg-dock-section-body">
+            <p className="muted tool-hint">{status}</p>
+            <div className="seg-dock-row seg-dock-row-2">
+              <label
+                className="tool-field"
+                title={t("segmentation.marginTitle")}
+              >
+                {t("segmentation.margin")}
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={margin}
+                  disabled={busy || running}
+                  onChange={(e) => setMargin(Number(e.target.value))}
+                />
+              </label>
+              <label
+                className="tool-field"
+                title={t("segmentation.minIouTitle")}
+              >
+                {t("segmentation.minIou")}
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={minIou}
+                  disabled={busy || running}
+                  onChange={(e) => setMinIou(Number(e.target.value))}
+                />
+              </label>
+            </div>
+            <div className="seg-dock-actions">
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || running}
+                title={t("segmentation.runTitle")}
+                onClick={run}
+              >
+                {running ? t("segmentation.extracting") : t("segmentation.run")}
+              </button>
+              <button
+                type="button"
+                disabled={busy || !canLabel}
+                title={t("segmentation.saveLabelsTitle")}
+                onClick={() => void saveLabels()}
+              >
+                {t("segmentation.saveLabels")}
+              </button>
+            </div>
+            {labelMsg && <p className="muted tool-hint">{labelMsg}</p>}
+            <p className="muted tool-hint">
+              {t("segmentation.pairsHint", { count })}
+            </p>
+          </div>
+        )}
+      </section>
+
+      {hasPairs && (
+        <section className={`process-dock-section seg-dock-histogram ${histMin ? "minimized" : ""}`}>
+          <div className="seg-dock-section-header">
+            <h3>{t("segmentation.histTitle")}</h3>
+            <button
+              type="button"
+              className="ghost icon-btn"
+              title={histMin ? t("segmentation.expandHist") : t("segmentation.minimizeHist")}
+              onClick={() => setHistMin(!histMin)}
+            >
+              {histMin ? "▸" : "▾"}
+            </button>
+          </div>
+          {!histMin && (
+            <div className="seg-dock-section-body seg-dock-hist-body">
+              <div className="seg-dock-row">
+                <label
+                  className="tool-field tool-check"
+                  title={t("segmentation.thermalColoringTitle")}
+                >
+                  <input
+                    type="checkbox"
+                    checked={colorState.thermalColoring}
+                    onChange={(e) => onColorStateChange({ thermalColoring: e.target.checked })}
+                  />
+                  {t("segmentation.thermalColoring")}
+                </label>
+                <label
+                  className="tool-field"
+                  title={t("segmentation.indicatorTitle")}
+                >
+                  {t("segmentation.indicator")}
+                  <select
+                    value={colorState.indicator}
+                    disabled={!colorState.thermalColoring}
+                    onChange={(e) => setIndicator(e.target.value as ThermalIndicator)}
+                  >
+                    {THERMAL_INDICATORS.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {t(INDICATOR_KEY[o.id])}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <ThermalDistributionPlot
+                values={values}
+                range={colorState.colorRange!}
+                onRangeChange={(r) => onColorStateChange({ colorRange: r })}
+              />
+              <p className="muted tool-hint">
+                {t("segmentation.histHint")}
+              </p>
+            </div>
+          )}
+        </section>
+      )}
     </>
   );
 }

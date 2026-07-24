@@ -29,7 +29,7 @@ from openpvscope.segmentation.pairing import (
     pair_rgb_thermal_panels,
 )
 
-SEGMENTATION_REV = "seg-v2"
+SEGMENTATION_REV = "seg-v3"
 PREVIEW_MAX = 512
 ProgressCb = Callable[[float | None, str], None]
 
@@ -157,19 +157,26 @@ def crop_oriented_panel(
     """
     Deskewed panel crop via perspective warp of a local window.
 
-    margin_factor: fraction of panel size added on each side (0 = exact panel).
-    RGB → HxWx3 uint8 (stretched). Thermal → HxW float32 (raw °C).
+    Output size follows ordered box edge lengths (TL→TR, TL→BL), not OpenCV
+    minAreaRect (w,h) which often swaps axes. Longer side is forced horizontal.
     """
     pts = _ring_pixel_pts(ring_lonlat, affine=ds.transform, from_wgs=from_wgs)
     rect = cv2.minAreaRect(pts)
-    (cx, cy), (rw, rh), _angle = rect
-    rw = float(max(rw, 1.0))
-    rh = float(max(rh, 1.0))
-    scale = 1.0 + 2.0 * float(margin_factor)
-    out_w = max(1, int(round(rw * scale)))
-    out_h = max(1, int(round(rh * scale)))
+    box = _order_box_points(cv2.boxPoints(rect))  # TL, TR, BR, BL
+    top = float(np.linalg.norm(box[1] - box[0]))
+    left = float(np.linalg.norm(box[3] - box[0]))
+    top = max(top, 1.0)
+    left = max(left, 1.0)
 
-    box = _order_box_points(cv2.boxPoints(rect))
+    # Landscape: longer side along X (matches deskewed templates)
+    if top < left:
+        box = np.asarray([box[3], box[0], box[1], box[2]], dtype=np.float32)
+        top, left = left, top
+
+    scale = 1.0 + 2.0 * float(margin_factor)
+    out_w = max(1, int(round(top * scale)))
+    out_h = max(1, int(round(left * scale)))
+
     center = box.mean(axis=0)
     src_world = center + (box - center) * scale
 
@@ -199,7 +206,6 @@ def crop_oriented_panel(
     if is_rgb:
         if ds.count >= 3:
             data = ds.read([1, 2, 3], window=window, boundless=True, fill_value=0)
-            # CxHxW → HxWxC for warp
             patch = np.transpose(data, (1, 2, 0)).astype(np.float32)
         else:
             g = ds.read(1, window=window, boundless=True, fill_value=0).astype(np.float32)
@@ -212,7 +218,6 @@ def crop_oriented_panel(
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
         )
-        # stretch per-channel
         return _stretch_u8(np.transpose(warped, (2, 0, 1)))
 
     raw = ds.read(
@@ -373,10 +378,19 @@ def run_segmentation(
                     {
                         "kind": "pair",
                         "id": pid,
+                        "rgb_id": pair.get("rgb_id"),
+                        "thermal_id": pair.get("thermal_id"),
+                        "min_temperature": stats.get("min_temperature"),
+                        "max_temperature": stats.get("max_temperature"),
                         "mean_temperature": stats.get("mean_temperature"),
+                        "median_temperature": stats.get("median_temperature"),
+                        "std_temperature": stats.get("std_temperature"),
                         "var_temperature": stats.get("var_temperature"),
+                        "valid_pixels": stats.get("valid_pixels"),
                         "confidence": pair.get("confidence"),
+                        "thermal_confidence": pair.get("thermal_confidence"),
                         "iou": pair.get("iou"),
+                        "distance_m": pair.get("distance_m"),
                     },
                     fid=pid,
                 )
@@ -426,4 +440,93 @@ def segmentation_status(project_root: Path) -> dict[str, Any]:
         "has_pairs": count > 0,
         "pair_count": count,
         "segmentation_rev": rev,
+    }
+
+
+def load_pairs_geojson_enriched(project_root: Path) -> dict[str, Any]:
+    """
+    Load pairs.geojson and backfill thermal stats from pairs.json / meta.json
+    when older extracts only stored mean/var on the GeoJSON.
+    """
+    root = Path(project_root)
+    seg = segmentation_root(root)
+    gj_path = seg / "pairs.geojson"
+    if not gj_path.is_file():
+        return {"type": "FeatureCollection", "features": []}
+    fc = json.loads(gj_path.read_text(encoding="utf-8"))
+    by_id: dict[str, dict] = {}
+    pairs_path = seg / "pairs.json"
+    if pairs_path.is_file():
+        try:
+            for p in json.loads(pairs_path.read_text(encoding="utf-8")).get("pairs") or []:
+                pid = str(p.get("id") or "")
+                if not pid:
+                    continue
+                stats = p.get("stats") or {}
+                by_id[pid] = {
+                    "rgb_id": p.get("rgb_id"),
+                    "thermal_id": p.get("thermal_id"),
+                    "iou": p.get("iou"),
+                    "distance_m": p.get("distance_m"),
+                    "confidence": p.get("confidence"),
+                    "thermal_confidence": p.get("thermal_confidence"),
+                    **{k: stats.get(k) for k in (
+                        "min_temperature",
+                        "max_temperature",
+                        "mean_temperature",
+                        "median_temperature",
+                        "std_temperature",
+                        "var_temperature",
+                        "valid_pixels",
+                    )},
+                }
+        except Exception:
+            by_id = {}
+
+    for feat in fc.get("features") or []:
+        props = feat.setdefault("properties", {})
+        pid = str(props.get("id") or feat.get("id") or "")
+        src = by_id.get(pid)
+        if not src:
+            meta_path = seg / "panels" / pid / "meta.json"
+            if meta_path.is_file():
+                try:
+                    src = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    src = None
+        if not src:
+            continue
+        for k, v in src.items():
+            if props.get(k) is None and v is not None:
+                props[k] = v
+    return fc
+
+
+def read_thermal_raw(project_root: Path, panel_id: str) -> dict[str, Any]:
+    """Float32 thermal crop as flat list for interactive viewer."""
+    import math
+
+    safe = "".join(c for c in panel_id if c.isalnum() or c in "-_")
+    path = segmentation_root(project_root) / "panels" / safe / "thermal.tif"
+    if not path.is_file():
+        raise FileNotFoundError("thermal.tif not found")
+    with rasterio.open(path) as ds:
+        arr = ds.read(1).astype(np.float32)
+    h, w = int(arr.shape[0]), int(arr.shape[1])
+    flat = arr.reshape(-1)
+    data: list[float | None] = []
+    for v in flat:
+        fv = float(v)
+        if not math.isfinite(fv):
+            data.append(None)
+        else:
+            data.append(fv)
+    valid = [v for v in data if v is not None and v > -100]
+    return {
+        "width": w,
+        "height": h,
+        "data": data,
+        "min": min(valid) if valid else None,
+        "max": max(valid) if valid else None,
+        "mean": float(sum(valid) / len(valid)) if valid else None,
     }

@@ -42,6 +42,7 @@ export interface AppSettings {
   recent_projects: Array<{ path: string; name: string; opened_at: string }>;
   opsz_default_mode: "full" | "light";
   opsz_light_exclude: string[];
+  language: "en" | "it" | "es" | "de" | "fr";
 }
 
 export interface RecentItem {
@@ -329,6 +330,8 @@ export const api = {
     nms_iou: number;
     num_templates?: number;
     thermal_temp_cap?: number | null;
+    advanced_validation?: boolean;
+    fine_tuning_confidence?: number;
   }) =>
     req<{ started: boolean }>("/api/detection/run", {
       method: "POST",
@@ -340,6 +343,8 @@ export const api = {
         num_templates: opts.num_templates ?? 0,
         thermal_temp_cap: opts.thermal_temp_cap ?? 45,
         modality: "both",
+        advanced_validation: opts.advanced_validation ?? true,
+        fine_tuning_confidence: opts.fine_tuning_confidence ?? 0.65,
       }),
     }),
   detectionJob: () =>
@@ -387,6 +392,27 @@ export const api = {
     req<Record<string, unknown>>(`/api/segmentation/panel/${id}/meta`),
   segmentationPreviewUrl: (id: string, kind: "rgb" | "thermal") =>
     `/api/segmentation/panel/${id}/preview/${kind}`,
+  segmentationThermalRaw: (id: string) =>
+    req<{
+      width: number;
+      height: number;
+      data: (number | null)[];
+      min: number | null;
+      max: number | null;
+      mean: number | null;
+    }>(`/api/segmentation/panel/${id}/thermal-raw`),
+  saveSegmentationLabels: (body: { indicator: string; green: number; red: number }) =>
+    req<{
+      path: string;
+      labeled: number;
+      label_0: number;
+      label_mid: number;
+      label_1: number;
+    }>("/api/segmentation/labels", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
   ml: () => req<{ message: string }>("/api/ml/status"),
   exports: () => req<{ files: string[] }>("/api/exports/status"),
 };

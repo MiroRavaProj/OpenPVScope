@@ -21,6 +21,7 @@ from openpvscope.detection.deskew import (
     warp_image,
 )
 from openpvscope.detection.grid import build_grid_cells, regularize_quad
+from openpvscope.detection.refine import run_advanced_validation
 from openpvscope.detection.template_match import _Heartbeat, extract_patch, match_templates
 from openpvscope.geo.crs import (
     feature_collection,
@@ -42,7 +43,7 @@ DEFAULT_NMS_IOU = 0.05
 DEFAULT_NUM_TEMPLATES = 0  # 0 => all grid cells
 DEFAULT_THERMAL_TEMP_CAP = 45.0  # °C
 DEFAULT_DISPLAY_CONFIDENCE = 0.7  # map visualization filter only
-PIPELINE_REV = "detect-v10"
+PIPELINE_REV = "detect-v11"
 
 
 def detection_dir(root: Path, modality: Modality = "rgb") -> Path:
@@ -201,6 +202,8 @@ def run_detection(
     nms_iou: float = DEFAULT_NMS_IOU,
     num_templates: int = DEFAULT_NUM_TEMPLATES,
     thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
+    advanced_validation: bool = True,
+    fine_tuning_confidence: float = 0.65,
     progress: ProgressCb | None = None,
     log: LogCb | None = None,
 ) -> dict[str, Any]:
@@ -239,6 +242,7 @@ def run_detection(
 
     features: list[dict] = []
     out = det_dir / "panels.geojson"
+    refine_stats: dict[str, Any] | None = None
 
     with rasterio.open(ortho) as ds:
         to_wgs = transformer_to_wgs84(ds.crs)
@@ -355,9 +359,30 @@ def run_detection(
         vlog(f"[{modality}] raw peaks: {raw_peaks} → after NMS: {len(all_dets)}")
         ilog(f"[{modality}] {len(all_dets)} panels after NMS (from {raw_peaks} peaks)")
 
+        refine_stats = None
+        if advanced_validation and all_dets:
+            tw = float(np.mean([t.shape[1] for t in templates]))
+            th = float(np.mean([t.shape[0] for t in templates]))
+
+            def refine_prog(_p: float | None, msg: str) -> None:
+                prog(83, msg)
+                vlog(f"[{modality}] {msg}")
+
+            all_dets, refine_stats = run_advanced_validation(
+                all_dets,
+                tw,
+                th,
+                fine_tuning_confidence_threshold=fine_tuning_confidence,
+                progress=refine_prog,
+            )
+            ilog(
+                f"[{modality}] refine: {refine_stats['input']} → {refine_stats['after_step3']} "
+                f"(filled +{refine_stats['filled']})"
+            )
+
         seed_ring = [[float(p[0]), float(p[1])] for p in grid_feats[0]["geometry"]["coordinates"][0][:4]]
         centers: list[tuple[float, float]] = []
-        confidences: list[float] = []
+        det_meta: list[dict[str, Any]] = []
         for det in all_dets:
             x, y, w, h = det["bbox"]
             cx_r, cy_r = x + w / 2.0, y + h / 2.0
@@ -365,20 +390,40 @@ def run_detection(
             x_crs, y_crs = pixel_to_crs(col, row)
             lonlat = ring_to_lonlat([[x_crs, y_crs]], to_wgs)[0]
             centers.append((float(lonlat[0]), float(lonlat[1])))
-            confidences.append(float(det["confidence"]))
+            det_meta.append(
+                {
+                    "confidence": float(det.get("confidence") or 0.0),
+                    "bbox_w": float(w),
+                    "bbox_h": float(h),
+                    "bbox_pixels": [float(x), float(y), float(w), float(h)],
+                    "deskew_angle_deg": float(angle),
+                    "cluster_id": det.get("cluster_id"),
+                    "is_grid_aligned": bool(det.get("is_grid_aligned", True)),
+                    "border_outlier": bool(det.get("border_outlier", False)),
+                    "filled_panel": bool(det.get("filled_panel", False)),
+                    "restored_panel": bool(det.get("restored_panel", False)),
+                }
+            )
 
-        prog(85, f"Writing {len(centers)} oriented panels [{PIPELINE_REV}]")
+        prog(88, f"Writing {len(centers)} oriented panels [{PIPELINE_REV}]")
         quads = oriented_quads_from_seed(seed_ring, centers)
-        for ring_ll, conf in zip(quads, confidences):
+        for ring_ll, meta in zip(quads, det_meta):
             pid = uuid.uuid4().hex[:12]
             features.append(
                 polygon_feature(
                     ring_ll,
                     {
                         "kind": "panel",
-                        "confidence": conf,
+                        "confidence": meta["confidence"],
                         "id": pid,
                         "modality": modality,
+                        "bbox_w": meta["bbox_w"],
+                        "bbox_h": meta["bbox_h"],
+                        "deskew_angle_deg": meta["deskew_angle_deg"],
+                        "cluster_id": meta["cluster_id"],
+                        "is_grid_aligned": meta["is_grid_aligned"],
+                        "filled_panel": meta["filled_panel"],
+                        "restored_panel": meta["restored_panel"],
                     },
                     fid=pid,
                 )
@@ -400,12 +445,21 @@ def run_detection(
                 "search_size": [int(rotated.shape[1]), int(rotated.shape[0])],
                 "ortho_size": [out_w, out_h],
                 "pipeline_rev": PIPELINE_REV,
+                "advanced_validation": advanced_validation,
+                "fine_tuning_confidence": fine_tuning_confidence,
+                "refine_stats": refine_stats,
             },
         )
         vlog(f"[{modality}] wrote {out}")
 
     prog(100, f"{modality} detection complete — {len(features)} panels [{PIPELINE_REV}]")
-    return {"count": len(features), "path": str(out), "modality": modality, "pipeline_rev": PIPELINE_REV}
+    return {
+        "count": len(features),
+        "path": str(out),
+        "modality": modality,
+        "pipeline_rev": PIPELINE_REV,
+        "refine_stats": refine_stats if advanced_validation else None,
+    }
 
 
 def _modality_status(root: Path, modality: Modality) -> dict[str, Any]:

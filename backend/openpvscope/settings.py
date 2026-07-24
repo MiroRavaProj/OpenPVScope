@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from openpvscope.io_atomic import atomic_write_json
 
 OpszMode = Literal["full", "light"]
+AppLanguage = Literal["en", "it", "es", "de", "fr"]
 
 
 def config_dir() -> Path:
@@ -41,6 +42,7 @@ class AppSettings(BaseModel):
     opsz_light_exclude: list[str] = Field(
         default_factory=lambda: ["work/", "photogrammetry/", ".openpvscope_history/"]
     )
+    language: AppLanguage = "en"
 
 
 def _utc_now() -> str:

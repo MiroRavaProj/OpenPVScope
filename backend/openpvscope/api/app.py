@@ -49,7 +49,9 @@ from openpvscope.segmentation import (
     segmentation_status,
     start_segmentation_job,
 )
-from openpvscope.segmentation.extract import segmentation_root
+from openpvscope.segmentation.extract import load_pairs_geojson_enriched, read_thermal_raw, segmentation_root
+from openpvscope.segmentation.labels import save_thermal_labels
+from openpvscope.segmentation.thermal_color import LABEL_INDICATORS, THERMAL_INDICATORS
 from openpvscope.settings import (
     clear_recent_projects,
     load_settings,
@@ -108,6 +110,7 @@ class SettingsPatch(BaseModel):
     recent_max: int | None = None
     opsz_default_mode: str | None = None
     opsz_light_exclude: list[str] | None = None
+    language: Literal["en", "it", "es", "de", "fr"] | None = None
     clear_default_project_dir: bool = False
     clear_recent: bool = False
 
@@ -135,12 +138,20 @@ class DetectRunBody(BaseModel):
     num_templates: int = Field(default=0, ge=0, le=500)
     thermal_temp_cap: float | None = Field(default=45.0, ge=10.0, le=70.0)
     modality: Literal["rgb", "thermal", "both"] = "both"
+    advanced_validation: bool = True
+    fine_tuning_confidence: float = Field(default=0.65, ge=0.1, le=0.99)
 
 
 class SegmentRunBody(BaseModel):
     margin_factor: float = Field(default=0.2, ge=0.0, le=1.0)
     search_radius_m: float | None = Field(default=None, ge=0.5, le=50.0)
     min_iou: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class SegmentLabelsBody(BaseModel):
+    indicator: str = Field(default="max_temperature")
+    green: float
+    red: float
 
 
 def _pick_with_tk(mode: str) -> str | None:
@@ -1008,6 +1019,8 @@ def api_detection_run(body: DetectRunBody) -> dict[str, Any]:
             nms_iou=body.nms_iou,
             num_templates=body.num_templates,
             thermal_temp_cap=body.thermal_temp_cap,
+            advanced_validation=body.advanced_validation,
+            fine_tuning_confidence=body.fine_tuning_confidence,
         )
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
@@ -1124,12 +1137,7 @@ def api_segmentation_pairs_geojson() -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
-    path = segmentation_root(store.root) / "pairs.geojson"
-    if not path.is_file():
-        return {"type": "FeatureCollection", "features": []}
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_pairs_geojson_enriched(store.root)
 
 
 @app.get("/api/segmentation/panel/{panel_id}/preview/{kind}")
@@ -1158,6 +1166,48 @@ def api_segmentation_panel_meta(panel_id: str) -> dict[str, Any]:
     import json
 
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/segmentation/panel/{panel_id}/thermal-raw")
+def api_segmentation_thermal_raw(panel_id: str) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    try:
+        return read_thermal_raw(store.root, panel_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@app.post("/api/segmentation/labels")
+def api_segmentation_labels(body: SegmentLabelsBody) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    if body.indicator not in LABEL_INDICATORS:
+        raise HTTPException(
+            400,
+            f"indicator must be one of {list(LABEL_INDICATORS)}",
+        )
+    try:
+        return save_thermal_labels(
+            store.root,
+            indicator=body.indicator,
+            green_threshold=body.green,
+            red_threshold=body.red,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/segmentation/indicators")
+def api_segmentation_indicators() -> dict[str, Any]:
+    return {
+        "thermal": list(THERMAL_INDICATORS),
+        "labelable": list(LABEL_INDICATORS),
+    }
 
 
 @app.get("/api/ml/status")
