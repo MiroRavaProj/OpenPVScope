@@ -164,8 +164,8 @@ def odx_run_script(root: Path | None = None) -> Path:
     root = root or find_odx_root()
     if root is None:
         raise FileNotFoundError(
-            "ODX not found. Re-run OpenPVScope Full Setup, install ODX from "
-            "https://github.com/WebODM/ODX/releases, or set OPENPVSCOPE_ODX_ROOT."
+            "ODX not found. Install ODX from the Photogrammetry screen, "
+            "from https://github.com/WebODM/ODX/releases, or set OPENPVSCOPE_ODX_ROOT."
         )
     for name in ("run.bat", "winrun.bat"):
         p = root / name
@@ -182,8 +182,8 @@ def probe_odx() -> dict:
             "root": None,
             "run_script": None,
             "error": (
-                "ODX not found. Re-run OpenPVScope Full Setup, or install from "
-                "https://github.com/WebODM/ODX/releases"
+                "ODX not found. Install ODX from the Photogrammetry screen, "
+                "or from https://github.com/WebODM/ODX/releases"
             ),
         }
     try:
@@ -419,8 +419,8 @@ class ODXRunner:
             self.odx_root = find_odx_root()
         if self.odx_root is None or not _is_odx_root(self.odx_root):
             raise FileNotFoundError(
-                "ODX not found. Re-run OpenPVScope Full Setup, install ODX from "
-                "https://github.com/WebODM/ODX/releases, or set OPENPVSCOPE_ODX_ROOT."
+                "ODX not found. Install ODX from the Photogrammetry screen, "
+                "from https://github.com/WebODM/ODX/releases, or set OPENPVSCOPE_ODX_ROOT."
             )
 
         run_script = odx_run_script(self.odx_root)

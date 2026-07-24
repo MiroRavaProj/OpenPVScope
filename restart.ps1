@@ -185,7 +185,7 @@ Write-Host "Open: http://127.0.0.1:$Port" -ForegroundColor Green
 Write-Host "Venv: $Venv (Python $ver)"
 if (-not $odxOk) {
   Write-Host "Tip: ODX not found (C:\ODX\run.bat or OPENPVSCOPE_ODX_ROOT)." -ForegroundColor DarkGray
-  Write-Host "     End users: re-run OpenPVScope Full Setup. Developers: .\scripts\bootstrap_odx.ps1" -ForegroundColor DarkGray
+  Write-Host "     Install from the Photogrammetry UI, or developers: .\scripts\bootstrap_odx.ps1" -ForegroundColor DarkGray
 }
 if (-not $Dev) {
   Write-Host "Tip: use .\restart.ps1 -Dev only when you need --reload" -ForegroundColor DarkGray

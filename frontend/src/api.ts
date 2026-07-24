@@ -46,6 +46,7 @@ export interface AppSettings {
   opsz_default_mode: "full" | "light";
   opsz_light_exclude: string[];
   language: "en" | "it" | "es" | "de" | "fr";
+  odx_install_prompt_dismissed: boolean;
 }
 
 export interface RecentItem {
@@ -123,6 +124,14 @@ export interface OdxInfo {
   root?: string | null;
   run_script?: string | null;
   error?: string | null;
+}
+
+export interface OdxInstallStatus {
+  status: "idle" | "running" | "done" | "error";
+  message: string;
+  error: string | null;
+  progress: number | null;
+  odx: OdxInfo;
 }
 
 export interface PhotoJobPublic {
@@ -219,9 +228,13 @@ export const api = {
       version: string;
       odx: OdxInfo;
       odx_root: string | null;
+      odx_install_prompt_dismissed?: boolean;
       opencl: OpenClInfo;
       dji_sdk: DjiSdkInfo;
     }>("/api/health"),
+  installOdx: () =>
+    req<OdxInstallStatus>("/api/system/install-odx", { method: "POST" }),
+  installOdxStatus: () => req<OdxInstallStatus>("/api/system/install-odx"),
   createProject: (name: string, project_dir: string) =>
     req<ProjectPayload>("/api/projects", {
       method: "POST",

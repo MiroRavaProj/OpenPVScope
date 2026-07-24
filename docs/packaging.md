@@ -6,7 +6,7 @@
 - Start Menu + desktop shortcut
 - Register **`.opsx`** file association
 - Bundle app + DJI SDK when present
-- Chain-install **ODX** (photogrammetry) by default — no Docker, no conda, no Visual Studio for end users
+- **ODX is not bundled** — the app detects an existing install or downloads/installs ODX on demand from the Photogrammetry UI (no Docker, no conda, no Visual Studio for end users)
 
 ## Build outline
 
@@ -18,25 +18,22 @@ packaging\windows\build.bat
 
 That script:
 
-1. Downloads ODX companion installer via `scripts\fetch_odx_setup.ps1` → `packaging/windows/vendor/ODX_Setup_*.exe` (**fails if missing**)
-2. Builds frontend (`npm ci` + `npm run build`)
-3. Copies `frontend/dist` → `backend/openpvscope/static`
-4. Freezes backend with PyInstaller (`packaging/windows/openpvscope.spec`)
-5. Prints next step: compile Inno Setup
+1. Builds frontend (`npm ci` + `npm run build`)
+2. Copies `frontend/dist` → `backend/openpvscope/static`
+3. Freezes backend with PyInstaller (`packaging/windows/openpvscope.spec`)
+4. Prints next step: compile Inno Setup
 
-Then compile `packaging/windows/OpenPVScope.iss` with Inno Setup. The `odx` component **requires** `vendor\ODX_Setup*.exe` (compile fails if absent).
+Then compile `packaging/windows/OpenPVScope.iss` with Inno Setup.
 
 ### Components
 
-| Component | Default (Full) | Notes |
-|-----------|----------------|--------|
-| Application | yes | PyInstaller tree |
-| ODX photogrammetry | yes | Silent `ODX_Setup_*.exe` `/VERYSILENT /DIR=C:\ODX`; verifies `C:\ODX\run.bat` |
-| DJI Thermal SDK | yes when present | `engines/dji_tsdk` |
+| Component | Notes |
+|-----------|--------|
+| Application | PyInstaller tree |
+| DJI Thermal SDK | when `engines/dji_tsdk` present |
+| ODX AGPL notice | copied to `{app}\licenses` |
 
-**Full** Setup installs the app and ODX automatically. **Compact** installs the app only (GeoTIFF skip path); user can install ODX later from [WebODM/ODX releases](https://github.com/WebODM/ODX/releases).
-
-At runtime the app resolves ODX via `OPENPVSCOPE_ODX_ROOT`, then `C:\ODX`, registry InstallLocation, and `run.bat` on PATH.
+At runtime the app resolves ODX via `OPENPVSCOPE_ODX_ROOT`, then `C:\ODX`, registry, and `run.bat` on PATH. If missing, the UI offers **Install ODX** (downloads latest `ODX_Setup` from GitHub and installs silently to `C:\ODX`) or **Continue with GeoTIFFs only**.
 
 **License:** ODX is AGPL-3.0. OpenPVScope calls it as a separate process; see `packaging/windows/vendor/ODX_AGPL_NOTICE.txt`.
 
@@ -44,7 +41,7 @@ At runtime the app resolves ODX via `OPENPVSCOPE_ODX_ROOT`, then `C:\ODX`, regis
 
 | Audience | How to run |
 |----------|------------|
-| Developer | `uvicorn` + `npm run dev` or `python -m openpvscope.desktop`; install ODX once with `.\scripts\bootstrap_odx.ps1` |
-| End user | Installed `.exe` from Setup (**Full** includes ODX automatically) |
+| Developer | `uvicorn` + `npm run dev` or `python -m openpvscope.desktop`; optional `.\scripts\bootstrap_odx.ps1` |
+| End user | Installed `.exe`; install ODX from Photogrammetry when needed |
 
 See `packaging/windows/` for scripts and the Inno Setup template.

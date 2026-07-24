@@ -1583,6 +1583,15 @@ input[type="text"] {
   background: rgba(62, 207, 142, 0.06);
 }
 
+.photo-modality-card.photo-modality-disabled,
+.photo-odx-opts-disabled {
+  opacity: 0.55;
+}
+
+.photo-modality-card.photo-modality-disabled {
+  pointer-events: none;
+}
+
 .photo-modality-head {
   display: flex;
   align-items: center;

@@ -7,7 +7,7 @@ OpenPVScope uses native **[ODX](https://github.com/WebODM/ODX)** (WebODM engine,
 - Official **Windows Setup** (`ODX_Setup_*.exe` ~227 MB) — prebuilt, no MSVC/conda on the user machine.
 - Output: `odm_orthophoto/odm_orthophoto.tif`.
 - GPU acceleration on by default on Windows.
-- **Full** OpenPVScope Setup chain-installs ODX silently to `C:\ODX`.
+- OpenPVScope **detects** an existing install, or offers **in-app install** (download latest release → silent install to `C:\ODX`).
 
 ## Pipeline (per modality)
 
@@ -27,7 +27,7 @@ OpenPVScope uses native **[ODX](https://github.com/WebODM/ODX)** (WebODM engine,
 Resolution order in `find_odx_root()`:
 
 1. Env `OPENPVSCOPE_ODX_ROOT`
-2. `C:\ODX` (ODX Setup / Full OpenPVScope Setup default)
+2. `C:\ODX` (ODX Setup / in-app install default)
 3. Program Files / LocalAppData / home `ODX` folders
 4. Uninstall registry InstallLocation for display name containing “ODX”
 5. `engines/odx` next to a frozen exe (unusual)
@@ -35,7 +35,9 @@ Resolution order in `find_odx_root()`:
 
 ### End users
 
-Install **OpenPVScope Full Setup** (ODX is installed automatically). Compact Setup is app-only (GeoTIFF skip path); install ODX later from [ODX Releases](https://github.com/WebODM/ODX/releases).
+1. If ODX is already installed → OpenPVScope uses it.
+2. If not → a prompt explains photogrammetry needs ODX; choose **Install ODX** or **Continue with GeoTIFFs only**.
+3. Skipping greys out ODX process controls; import GeoTIFFs remains available; **Install ODX** stays on the Photogrammetry screen.
 
 ### Developers
 
@@ -43,7 +45,7 @@ Install **OpenPVScope Full Setup** (ODX is installed automatically). Compact Set
 .\scripts\bootstrap_odx.ps1
 ```
 
-Or install manually from [ODX Releases](https://github.com/WebODM/ODX/releases). Optionally set `OPENPVSCOPE_ODX_ROOT`. Missing ODX does not prevent the rest of the app from starting.
+Or install from [ODX Releases](https://github.com/WebODM/ODX/releases). Optionally set `OPENPVSCOPE_ODX_ROOT`. Missing ODX does not prevent the rest of the app from starting.
 
 ## ODX license
 

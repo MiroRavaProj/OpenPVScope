@@ -43,6 +43,8 @@ class AppSettings(BaseModel):
         default_factory=lambda: ["work/", "photogrammetry/", ".openpvscope_history/"]
     )
     language: AppLanguage = "en"
+    # User dismissed the "Install ODX?" modal (GeoTIFF-only until they install)
+    odx_install_prompt_dismissed: bool = False
 
 
 def _utc_now() -> str:

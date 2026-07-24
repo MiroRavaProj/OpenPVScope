@@ -41,6 +41,7 @@ from openpvscope.ingest import (
 )
 from openpvscope.ml import ml_status
 from openpvscope.photogrammetry.opencl import probe_opencl
+from openpvscope.photogrammetry.odx_install import get_install_state, start_odx_install
 from openpvscope.photogrammetry import (
     ODX_STAGES,
     ODXRunner,
@@ -178,6 +179,7 @@ class SettingsPatch(BaseModel):
     opsz_default_mode: str | None = None
     opsz_light_exclude: list[str] | None = None
     language: Literal["en", "it", "es", "de", "fr"] | None = None
+    odx_install_prompt_dismissed: bool | None = None
     clear_default_project_dir: bool = False
     clear_recent: bool = False
 
@@ -261,16 +263,32 @@ def health() -> dict[str, Any]:
     from openpvscope.detection.pipeline import PIPELINE_REV
     from openpvscope.segmentation.extract import SEGMENTATION_REV
 
+    settings = load_settings()
+    odx = probe_odx()
     return {
         "status": "ok",
         "version": __version__,
         "pipeline_rev": PIPELINE_REV,
         "segmentation_rev": SEGMENTATION_REV,
-        "odx": probe_odx(),
+        "odx": odx,
         "odx_root": str(find_odx_root()) if find_odx_root() else None,
+        "odx_install_prompt_dismissed": bool(settings.odx_install_prompt_dismissed),
         "opencl": probe_opencl(),
         "dji_sdk": probe_dji_sdk(),
     }
+
+
+@app.get("/api/system/install-odx")
+def install_odx_status() -> dict[str, Any]:
+    return get_install_state()
+
+
+@app.post("/api/system/install-odx")
+def install_odx_start() -> dict[str, Any]:
+    try:
+        return start_odx_install()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
 
 
 @app.get("/api/console")
@@ -778,7 +796,7 @@ def run_photogrammetry(
     if not probe_odx().get("available"):
         raise HTTPException(
             400,
-            "ODX not found. Re-run OpenPVScope Full Setup, or install ODX from https://github.com/WebODM/ODX/releases",
+            "ODX not found. Install ODX from the Photogrammetry screen, or from https://github.com/WebODM/ODX/releases",
         )
 
     runner = _get_photo_runner(store.root)
@@ -828,7 +846,7 @@ def run_photogrammetry_both(body: PhotogrammetryRunBody | None = None) -> dict[s
     if not probe_odx().get("available"):
         raise HTTPException(
             400,
-            "ODX not found. Re-run OpenPVScope Full Setup, or install ODX from https://github.com/WebODM/ODX/releases",
+            "ODX not found. Install ODX from the Photogrammetry screen, or from https://github.com/WebODM/ODX/releases",
         )
 
     runner = _get_photo_runner(store.root)

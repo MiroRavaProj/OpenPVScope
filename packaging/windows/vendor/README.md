@@ -1,3 +1,4 @@
-# Place ODX_Setup_*.exe here before compiling OpenPVScope.iss (Full / odx component).
-# `packaging/windows/build.bat` downloads it automatically via scripts/fetch_odx_setup.ps1.
-# Do not commit the large .exe to git. Inno compile fails if this file is missing.
+# ODX is not vendored into the OpenPVScope installer.
+# End users install ODX on demand from the Photogrammetry UI (GitHub Releases).
+# Developers may still use: .\scripts\fetch_odx_setup.ps1 / .\scripts\bootstrap_odx.ps1
+# Keep ODX_AGPL_NOTICE.txt here — it is copied into {app}\licenses.

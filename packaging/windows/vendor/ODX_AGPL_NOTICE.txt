@@ -1,5 +1,5 @@
 ODX (Open Drone Map / WebODM engine) is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
-OpenPVScope invokes ODX as a separate installed program via subprocess. The ODX installer bundled or chained by OpenPVScope Setup is a companion product, not part of the OpenPVScope MIT binary.
+OpenPVScope invokes ODX as a separate installed program via subprocess. ODX may be installed on demand from the OpenPVScope UI (download from GitHub Releases) or manually; it is a companion product, not part of the OpenPVScope MIT binary.
 
 Source and license: https://github.com/WebODM/ODX

@@ -1,5 +1,5 @@
-# Fetch latest ODX_Setup_*.exe into packaging/windows/vendor for Inno Setup.
-# Not committed to git (large binary). Run before building OpenPVScope-Setup.
+# Fetch latest ODX_Setup_*.exe into packaging/windows/vendor (developer/bootstrap use).
+# Not committed to git (large binary). End users install ODX from the OpenPVScope UI.
 
 param(
   [string]$OutDir = "",
@@ -34,4 +34,4 @@ $dest = Join-Path $OutDir $asset.name
 Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB) -> $dest"
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $dest -UseBasicParsing
 Write-Host "Done: $dest"
-Write-Host "Compile OpenPVScope.iss with the odx component; Setup will chain-install this file."
+Write-Host "Developers: run the setup, or use .\scripts\bootstrap_odx.ps1. End users install ODX from the app UI."

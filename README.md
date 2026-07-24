@@ -20,12 +20,13 @@ Projects live on disk as a folder plus a **`.opsx`** JSON descriptor (always aut
 ## For users (Windows)
 
 1. Download the latest **OpenPVScope Setup** from [Releases](../../releases) (when published).  
-2. Install (Full type includes **ODX** photogrammetry) and open **OpenPVScope** from the Start Menu.  
+2. Install OpenPVScope and open it from the Start Menu.  
 3. On first screen: **Create** a project (name + save folder) or **Open** an existing `.opsx`.  
-4. Work normally — everything autosaves; reopen the `.opsx` after a crash to continue.  
-5. **Export .opsz** when you need a portable archive to share or back up.
+4. If ODX is not detected, install it from the Photogrammetry prompt (or import GeoTIFF orthophotos).  
+5. Work normally — everything autosaves; reopen the `.opsx` after a crash to continue.  
+6. **Export .opsz** when you need a portable archive to share or back up.
 
-**Requirements:** Windows 10+. Photogrammetry needs [ODX](https://github.com/WebODM/ODX) — installed automatically by **Full** Setup (or separately). See [docs/photogrammetry.md](docs/photogrammetry.md).
+**Requirements:** Windows 10+. Photogrammetry needs [ODX](https://github.com/WebODM/ODX) — install from the app UI or separately. See [docs/photogrammetry.md](docs/photogrammetry.md).
 
 ## For developers
 
@@ -69,9 +70,9 @@ See [docs/architecture.md](docs/architecture.md), [docs/opsx_format.md](docs/ops
 
 ### ODX (photogrammetry)
 
-**End users:** choose **Full** when running OpenPVScope Setup — ODX installs silently to `C:\ODX`.
+**End users:** if ODX is missing, use **Install ODX** on the Photogrammetry screen (downloads the latest release to `C:\ODX`), or continue with GeoTIFF import only.
 
-**Developers** (local checkout without the Windows installer):
+**Developers** (local checkout):
 
 ```powershell
 .\scripts\bootstrap_odx.ps1

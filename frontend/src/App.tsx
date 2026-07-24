@@ -11,6 +11,7 @@ import { MapView } from "./MapView";
 import { OrthoAlignmentView } from "./AlignmentView";
 import { PhotogrammetryView } from "./PhotogrammetryView";
 import { SettingsModal } from "./SettingsModal";
+import { OdxInstallModal } from "./OdxInstallModal";
 import { ActivityConsole } from "./ActivityConsole";
 import { PlantWorkspace } from "./PlantWorkspace";
 import { AppLanguage, I18nProvider, isAppLanguage, useT } from "./i18n";
@@ -46,6 +47,10 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
   const [busy, setBusy] = useState(false);
   const [openPath, setOpenPath] = useState("");
   const [odxOk, setOdxOk] = useState<boolean | null>(null);
+  const [odxPromptDismissed, setOdxPromptDismissed] = useState(false);
+  const [odxModalOpen, setOdxModalOpen] = useState(false);
+  const [odxPromptShown, setOdxPromptShown] = useState(false);
+  const [photoSetupTick, setPhotoSetupTick] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [exportMode, setExportMode] = useState<"full" | "light">("full");
@@ -84,11 +89,60 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
   }, [applySettings]);
 
   useEffect(() => {
-    api.health()
-      .then((r) => setOdxOk(Boolean(r.odx?.available)))
+    api
+      .health()
+      .then((r) => {
+        setOdxOk(Boolean(r.odx?.available));
+        setOdxPromptDismissed(Boolean(r.odx_install_prompt_dismissed));
+      })
       .catch(() => setOdxOk(false));
     loadWelcomeExtras();
   }, [loadWelcomeExtras]);
+
+  useEffect(() => {
+    if (!project) return;
+    if (odxOk !== false) return;
+    if (odxPromptDismissed || odxPromptShown) return;
+    setOdxModalOpen(true);
+    setOdxPromptShown(true);
+  }, [project, odxOk, odxPromptDismissed, odxPromptShown]);
+
+  const refreshOdx = useCallback(async () => {
+    try {
+      const r = await api.health();
+      setOdxOk(Boolean(r.odx?.available));
+      setOdxPromptDismissed(Boolean(r.odx_install_prompt_dismissed));
+    } catch {
+      setOdxOk(false);
+    }
+  }, []);
+
+  const onOdxInstalled = useCallback(async () => {
+    await refreshOdx();
+    setOdxPromptDismissed(false);
+    try {
+      await api.putSettings({ odx_install_prompt_dismissed: false });
+    } catch {
+      /* ignore */
+    }
+  }, [refreshOdx]);
+
+  const onOdxSkip = useCallback(async () => {
+    setOdxPromptDismissed(true);
+    try {
+      await api.putSettings({ odx_install_prompt_dismissed: true });
+      const setup = await api.getPhotoSetup();
+      await api.putPhotoSetup({
+        ...setup,
+        mode: "skip",
+        wizard_complete: true,
+      });
+      setPhotoSetupTick((n) => n + 1);
+      await refresh();
+    } catch {
+      /* project may not have setup yet */
+    }
+  }, [refresh]);
 
   const activeStep = useMemo(() => {
     if (!project) return "photogrammetry" as PipelineStep;
@@ -496,6 +550,9 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
                 }}
                 busy={busy}
                 setBusy={setBusy}
+                onRequestInstallOdx={() => setOdxModalOpen(true)}
+                onOdxAvailabilityChange={setOdxOk}
+                setupReloadToken={photoSetupTick}
               />
             )}
             {step === "alignment" && (
@@ -538,6 +595,13 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
           onSaved={(s) => {
             applySettings(s);
           }}
+        />
+
+        <OdxInstallModal
+          open={odxModalOpen}
+          onClose={() => setOdxModalOpen(false)}
+          onInstalled={onOdxInstalled}
+          onSkip={onOdxSkip}
         />
 
         {exportPrompt && (

@@ -51,6 +51,7 @@ function ModalityCard(props: {
   title: string;
   fileCount: number;
   busy: boolean;
+  odxOk: boolean;
   dragging: boolean;
   onDrag: (over: boolean) => void;
   onFiles: (files: FileList | File[]) => void;
@@ -62,15 +63,17 @@ function ModalityCard(props: {
 
   return (
     <div
-      className={`photo-modality-card${props.dragging ? " drag-over" : ""}`}
+      className={`photo-modality-card${props.dragging ? " drag-over" : ""}${!props.odxOk ? " photo-modality-disabled" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
+        if (!props.odxOk) return;
         props.onDrag(true);
       }}
       onDragLeave={() => props.onDrag(false)}
       onDrop={(e) => {
         e.preventDefault();
         props.onDrag(false);
+        if (!props.odxOk) return;
         if (e.dataTransfer.files?.length) props.onFiles(e.dataTransfer.files);
       }}
     >
@@ -87,7 +90,7 @@ function ModalityCard(props: {
         <button
           type="button"
           className="ghost"
-          disabled={props.busy}
+          disabled={props.busy || !props.odxOk}
           onClick={() => inputRef.current?.click()}
         >
           {t("photo.chooseFiles")}
@@ -106,7 +109,7 @@ function ModalityCard(props: {
         <button
           type="button"
           className="primary"
-          disabled={props.busy || props.fileCount < 1}
+          disabled={props.busy || !props.odxOk || props.fileCount < 1}
           onClick={props.onRun}
         >
           {props.modality === "rgb" ? t("photo.runRgb") : t("photo.runThermal")}
@@ -125,6 +128,9 @@ export function PhotogrammetryView(props: {
   onOrthosReady: () => void | Promise<void>;
   busy: boolean;
   setBusy: (v: boolean) => void;
+  onRequestInstallOdx?: () => void;
+  onOdxAvailabilityChange?: (ok: boolean) => void;
+  setupReloadToken?: number;
 }) {
   const t = useT();
   const { noteLocal } = useConsole();
@@ -193,15 +199,18 @@ export function PhotogrammetryView(props: {
     }
   }, []);
 
+  const onOdxAvailabilityChange = props.onOdxAvailabilityChange;
   const loadEngine = useCallback(async () => {
     try {
       const h = await api.health();
       setEngine({ odx: h.odx ?? null, dji_sdk: h.dji_sdk ?? null });
+      onOdxAvailabilityChange?.(Boolean(h.odx?.available));
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [onOdxAvailabilityChange]);
 
+  const [installBusy, setInstallBusy] = useState(false);
   const refreshOrthos = useCallback(async () => {
     try {
       const [rgb, th] = await Promise.all([api.photoStatus("rgb"), api.photoStatus("thermal")]);
@@ -312,6 +321,7 @@ export function PhotogrammetryView(props: {
     stopPoll,
     pollUntilDone,
     applySetup,
+    props.setupReloadToken,
   ]);
 
   async function persistSetup(patch: Partial<PhotoSetup>) {
@@ -329,6 +339,11 @@ export function PhotogrammetryView(props: {
 
   async function finishWizard() {
     props.onError(null);
+    const hasOdx = Boolean(engine.odx?.available);
+    if (draftMode === "process" && !hasOdx) {
+      props.onRequestInstallOdx?.();
+      return;
+    }
     try {
       await persistSetup({
         wizard_complete: true,
@@ -340,6 +355,28 @@ export function PhotogrammetryView(props: {
       setWizardStep(null);
     } catch (e) {
       props.onError(String(e));
+    }
+  }
+
+  async function installOdxFromStrip() {
+    props.onError(null);
+    if (props.onRequestInstallOdx) {
+      props.onRequestInstallOdx();
+      return;
+    }
+    setInstallBusy(true);
+    try {
+      let s = await api.installOdx();
+      while (s.status === "running") {
+        await new Promise((r) => setTimeout(r, 1500));
+        s = await api.installOdxStatus();
+      }
+      if (s.status === "error") throw new Error(s.error || t("odxModal.installFailed"));
+      await loadEngine();
+    } catch (e) {
+      props.onError(String(e));
+    } finally {
+      setInstallBusy(false);
     }
   }
 
@@ -497,10 +534,19 @@ export function PhotogrammetryView(props: {
             <button
               type="button"
               className={`photo-wizard-choice${draftMode === "process" ? " selected" : ""}`}
-              onClick={() => setDraftMode("process")}
+              onClick={() => {
+                if (!odxOk) {
+                  setDraftMode("process");
+                  props.onRequestInstallOdx?.();
+                  return;
+                }
+                setDraftMode("process");
+              }}
             >
               <strong>{t("photo.wizard.processTitle")}</strong>
-              <span className="muted">{t("photo.wizard.processHint")}</span>
+              <span className="muted">
+                {odxOk ? t("photo.wizard.processHint") : t("photo.odxHint")}
+              </span>
             </button>
             <button
               type="button"
@@ -558,6 +604,17 @@ export function PhotogrammetryView(props: {
                 {t("photo.odxMissing")}
                 <span className="muted"> — {t("photo.odxHint")}</span>
               </span>
+            )}
+            {!odxOk && (
+              <button
+                type="button"
+                className="primary"
+                style={{ marginTop: "0.5rem" }}
+                disabled={props.busy || running || installBusy}
+                onClick={() => void installOdxFromStrip()}
+              >
+                {installBusy ? t("photo.odxInstalling") : t("photo.odxInstall")}
+              </button>
             )}
           </div>
           <div className="photo-engine-item">
@@ -621,6 +678,7 @@ export function PhotogrammetryView(props: {
                 title={t("photo.rgbTitle")}
                 fileCount={rgbCount}
                 busy={props.busy}
+                odxOk={odxOk}
                 dragging={dragRgb}
                 onDrag={setDragRgb}
                 onFiles={(f) => void upload("rgb", f)}
@@ -633,6 +691,7 @@ export function PhotogrammetryView(props: {
               title={t("photo.thermalTitle")}
               fileCount={thermalCount}
               busy={props.busy}
+              odxOk={odxOk}
               dragging={dragTh}
               onDrag={setDragTh}
               onFiles={(f) => void upload("thermal", f)}
@@ -641,7 +700,8 @@ export function PhotogrammetryView(props: {
             />
           </div>
 
-          <div className="card photo-odx-opts">
+          <div className={`card photo-odx-opts${!odxOk ? " photo-odx-opts-disabled" : ""}`}>
+            <fieldset disabled={props.busy || !odxOk} style={{ border: 0, margin: 0, padding: 0 }}>
             <h3>{t("photo.odxOpts.title")}</h3>
             <p className="muted">{t("photo.odxOpts.hint")}</p>
             <div className="tool-grid2">
@@ -726,9 +786,11 @@ export function PhotogrammetryView(props: {
               />
               <span>{t("photo.odxOpts.fast")}</span>
             </label>
+            </fieldset>
           </div>
 
           <div className="card photo-products">
+            <fieldset disabled={props.busy || !odxOk} style={{ border: 0, margin: 0, padding: 0 }}>
             <h3>{t("photo.products.title")}</h3>
             <p className="muted">{t("photo.products.hint")}</p>
             <div className="photo-product-toggles">
@@ -757,9 +819,11 @@ export function PhotogrammetryView(props: {
                 </label>
               ))}
             </div>
+            </fieldset>
           </div>
 
           <div className="card photo-thermal-params">
+            <fieldset disabled={props.busy || !odxOk} style={{ border: 0, margin: 0, padding: 0 }}>
             <h3>{t("photo.thermalParams")}</h3>
             <p className="muted">{t("photo.thermalParamsHint")}</p>
             <div className="tool-grid2">
@@ -833,13 +897,14 @@ export function PhotogrammetryView(props: {
                 <button
                   type="button"
                   className="primary"
-                  disabled={props.busy || rgbCount < 1 || thermalCount < 1}
+                  disabled={props.busy || !odxOk || rgbCount < 1 || thermalCount < 1}
                   onClick={() => void runBoth()}
                 >
                   {t("photo.runBoth")}
                 </button>
               </div>
             )}
+            </fieldset>
           </div>
 
           {(running || job) && (
