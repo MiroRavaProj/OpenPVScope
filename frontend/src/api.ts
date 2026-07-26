@@ -38,6 +38,54 @@ export interface ProjectPayload {
   history?: HistoryState;
 }
 
+export interface AlignmentParams {
+  max_reg_gsd_m: number;
+  global_max_m: number;
+  local_max_m: number;
+  tile_m: number;
+  stride_m: number;
+  nodata?: number;
+}
+
+export interface AlignmentMeta {
+  method?: string;
+  output?: string;
+  pass1_output?: string;
+  output_grid?: string;
+  pass1?: string;
+  gsd_work_m?: number;
+  gsd_thermal_m?: number;
+  max_reg_gsd_m?: number;
+  work_shape_hw?: number[];
+  native_shape_hw?: number[];
+  n_tile_pairs?: number;
+  n_akaze_matches?: number;
+  n_matches?: number;
+  n_inliers?: number;
+  scale_x?: number;
+  scale_y?: number;
+  rotation_deg?: number;
+  ecc_cc?: number | null;
+  ctrl_pts?: number;
+  tile_px?: number;
+  stride_px?: number;
+  prep_reproject_s?: number;
+  global_pass1_s?: number;
+  tile_tps_s?: number;
+  runtime_s?: number;
+  params?: AlignmentParams;
+}
+
+export interface AlignmentStatus {
+  status: string;
+  message?: string | null;
+  has_aligned: boolean;
+  aligned_mtime_ns?: number | null;
+  defaults?: AlignmentParams;
+  params?: AlignmentParams | null;
+  meta?: AlignmentMeta | null;
+}
+
 export interface AppSettings {
   history_max_steps: number;
   history_include_rasters: boolean;
@@ -413,26 +461,26 @@ export const api = {
     return `/api/ortho/${layerId}/match-rgb-window?${params}`;
   },
   alignmentStatus: () =>
-    req<{
-      status: string;
-      message?: string | null;
-      has_aligned: boolean;
-      aligned_mtime_ns?: number | null;
-      gcps: { ref_points: number[][]; target_points: number[][] } | null;
-    }>("/api/alignment/status"),
-  previewAlignment: (ref_points: number[][], target_points: number[][]) =>
-    req<ProjectPayload & { aligned_mtime_ns?: number | null }>("/api/alignment/preview", {
+    req<AlignmentStatus>("/api/alignment/status"),
+  previewAlignment: (params?: Partial<AlignmentParams>) =>
+    req<
+      ProjectPayload & {
+        aligned_mtime_ns?: number | null;
+        meta?: AlignmentMeta | null;
+        params?: AlignmentParams | null;
+      }
+    >("/api/alignment/preview", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ ref_points, target_points }),
+      body: JSON.stringify(params ?? {}),
     }),
   confirmAlignment: () =>
     req<ProjectPayload>("/api/alignment/confirm", { method: "POST" }),
-  applyAlignment: (ref_points: number[][], target_points: number[][]) =>
+  applyAlignment: (params?: Partial<AlignmentParams>) =>
     req<ProjectPayload>("/api/alignment/apply", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ ref_points, target_points }),
+      body: JSON.stringify(params ?? {}),
     }),
   detection: () => req<{ message: string }>("/api/detection/status"),
   detectionStatus: () =>

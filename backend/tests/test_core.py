@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from openpvscope.alignment.core import estimate_affine
+from openpvscope.alignment.core import DEFAULT_PARAMS, save_alignment_artifacts
 from openpvscope.domain.models import StepStatus
 from openpvscope.project.store import ProjectStore
 from openpvscope.thermal.dji import ThermalFormat, detect_thermal_format
@@ -194,11 +193,32 @@ def test_create_requires_folder(tmp_path: Path) -> None:
         store.create("X", "")
 
 
-def test_estimate_affine_identity() -> None:
-    pts = [[0, 0], [10, 0], [10, 10], [0, 10]]
-    M = estimate_affine(pts, pts)
-    assert M.shape == (3, 3)
-    np.testing.assert_allclose(M, np.eye(3), atol=1e-6)
+def test_alignment_defaults_and_artifacts(tmp_path: Path) -> None:
+    assert DEFAULT_PARAMS["max_reg_gsd_m"] == 0.02
+    assert DEFAULT_PARAMS["global_max_m"] == 2.5
+    assert DEFAULT_PARAMS["local_max_m"] == 0.5
+    assert DEFAULT_PARAMS["tile_m"] == 5.76
+    assert DEFAULT_PARAMS["stride_m"] == 3.84
+    params = dict(DEFAULT_PARAMS)
+    meta = {
+        "method": "phase_tps",
+        "output_path": str(tmp_path / "thermal_aligned.tif"),
+        "output_grid": "native_thermal",
+        "gsd_work_m": 0.03,
+        "gsd_thermal_m": 0.03,
+        "max_reg_gsd_m": 0.02,
+        "global_shift_xy_px_work": [1.0, -2.0],
+        "global_response": 0.5,
+        "ctrl_pts": 12,
+        "tile_px": 192,
+        "stride_px": 128,
+        "runtime_s": 1.5,
+        "work_shape_hw": [100, 200],
+        "native_shape_hw": [100, 200],
+    }
+    save_alignment_artifacts(tmp_path, params, meta)
+    assert (tmp_path / "alignment" / "params.json").is_file()
+    assert (tmp_path / "alignment" / "transform.json").is_file()
 
 
 def test_detect_tiff(tmp_path: Path) -> None:

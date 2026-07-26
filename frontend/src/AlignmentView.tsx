@@ -1,331 +1,52 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ProjectPayload } from "./api";
+import { AlignmentParams, AlignmentStatus, api, ProjectPayload } from "./api";
 import { useConsole } from "./ActivityConsole";
 import { useT } from "./i18n";
-
-type Pt = { x: number; y: number };
 
 const MIN_SCALE = 0.02;
 const MAX_SCALE = 64;
 const ZOOM_FACTOR = 1.18;
-const FETCH_DEBOUNCE_MS = 90;
+const FETCH_DEBOUNCE_MS = 160;
+
+function loadObjectUrl(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Failed to decode tile"));
+    img.src = url;
+  });
+}
+
+const DEFAULT_PARAMS: AlignmentParams = {
+  max_reg_gsd_m: 0.02,
+  global_max_m: 2.5,
+  local_max_m: 0.5,
+  tile_m: 5.76,
+  stride_m: 3.84,
+};
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-type HiResFrame = {
-  url: string;
-  col: number;
-  row: number;
-  width: number;
-  height: number;
-};
-
-function OrthoPane(props: {
-  title: string;
-  layerId: "rgb" | "thermal";
-  imageWidth: number;
-  imageHeight: number;
-  points: Pt[];
-  onAddPoint: (pt: Pt) => void;
-  accent?: string;
-  readOnly?: boolean;
-}) {
-  const t = useT();
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [hiRes, setHiRes] = useState<HiResFrame | null>(null);
-  const [loading, setLoading] = useState(false);
-  const panRef = useRef<{
-    active: boolean;
-    startX: number;
-    startY: number;
-    origX: number;
-    origY: number;
-  } | null>(null);
-  const didPanRef = useRef(false);
-  const fetchGen = useRef(0);
-  const scaleRef = useRef(scale);
-  const offsetRef = useRef(offset);
-  scaleRef.current = scale;
-  offsetRef.current = offset;
-
-  const fitToView = useCallback(() => {
-    const vp = viewportRef.current;
-    if (!vp || props.imageWidth < 2 || props.imageHeight < 2) return;
-    const pad = 16;
-    const sx = (vp.clientWidth - pad) / props.imageWidth;
-    const sy = (vp.clientHeight - pad) / props.imageHeight;
-    const s = clamp(Math.min(sx, sy), MIN_SCALE, 4);
-    setScale(s);
-    setOffset({
-      x: (vp.clientWidth - props.imageWidth * s) / 2,
-      y: (vp.clientHeight - props.imageHeight * s) / 2,
-    });
-  }, [props.imageWidth, props.imageHeight]);
-
-  useEffect(() => {
-    fitToView();
-  }, [fitToView, props.layerId]);
-
-  useEffect(() => {
-    const onResize = () => fitToView();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [fitToView]);
-
-  const refreshHiRes = useCallback(async () => {
-    const vp = viewportRef.current;
-    if (!vp || props.imageWidth < 2) return;
-    const s = scaleRef.current;
-    const off = offsetRef.current;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-    const left = Math.max(0, Math.floor(-off.x / s));
-    const top = Math.max(0, Math.floor(-off.y / s));
-    const right = Math.min(props.imageWidth, Math.ceil((vp.clientWidth - off.x) / s));
-    const bottom = Math.min(props.imageHeight, Math.ceil((vp.clientHeight - off.y) / s));
-    const w = Math.max(1, right - left);
-    const h = Math.max(1, bottom - top);
-    const outW = clamp(Math.round(w * s * dpr), 64, 4096);
-    const outH = clamp(Math.round(h * s * dpr), 64, 4096);
-
-    const gen = ++fetchGen.current;
-    setLoading(true);
-    try {
-      const url = api.orthoWindowUrl(props.layerId, {
-        col_off: left,
-        row_off: top,
-        width: w,
-        height: h,
-        out_w: outW,
-        out_h: outH,
-      });
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(await res.text());
-      const blob = await res.blob();
-      if (gen !== fetchGen.current) return;
-      const objectUrl = URL.createObjectURL(blob);
-      setHiRes((prev) => {
-        if (prev?.url) URL.revokeObjectURL(prev.url);
-        return { url: objectUrl, col: left, row: top, width: w, height: h };
-      });
-    } catch (e) {
-      console.error(e);
-    } finally {
-      if (gen === fetchGen.current) setLoading(false);
-    }
-  }, [props.layerId, props.imageWidth, props.imageHeight]);
-
-  useEffect(() => {
-    const t = window.setTimeout(() => void refreshHiRes(), FETCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
-  }, [scale, offset, refreshHiRes]);
-
-  useEffect(() => {
-    return () => {
-      setHiRes((prev) => {
-        if (prev?.url) URL.revokeObjectURL(prev.url);
-        return null;
-      });
-    };
-  }, []);
-
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const onWheelNative = (e: WheelEvent) => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
-      const rect = el.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      setScale((prev) => {
-        const newScale = clamp(prev * factor, MIN_SCALE, MAX_SCALE);
-        setOffset((off) => {
-          const imgX = (mx - off.x) / prev;
-          const imgY = (my - off.y) / prev;
-          return { x: mx - imgX * newScale, y: my - imgY * newScale };
-        });
-        return newScale;
-      });
-    };
-    el.addEventListener("wheel", onWheelNative, { passive: false });
-    return () => el.removeEventListener("wheel", onWheelNative);
-  }, []);
-
-  function zoomAt(clientX: number, clientY: number, factor: number) {
-    const vp = viewportRef.current;
-    if (!vp) return;
-    const rect = vp.getBoundingClientRect();
-    const mx = clientX - rect.left;
-    const my = clientY - rect.top;
-    setScale((prev) => {
-      const newScale = clamp(prev * factor, MIN_SCALE, MAX_SCALE);
-      setOffset((off) => {
-        const imgX = (mx - off.x) / prev;
-        const imgY = (my - off.y) / prev;
-        return { x: mx - imgX * newScale, y: my - imgY * newScale };
-      });
-      return newScale;
-    });
-  }
-
-  function screenToImage(clientX: number, clientY: number): Pt | null {
-    const vp = viewportRef.current;
-    if (!vp || props.imageWidth < 2) return null;
-    const rect = vp.getBoundingClientRect();
-    const mx = clientX - rect.left;
-    const my = clientY - rect.top;
-    const x = (mx - offset.x) / scale;
-    const y = (my - offset.y) / scale;
-    if (x < 0 || y < 0 || x > props.imageWidth || y > props.imageHeight) return null;
-    return { x, y };
-  }
-
-  function onPointerDown(e: React.PointerEvent) {
-    if (e.button === 1 || (e.button === 0 && (e.altKey || e.shiftKey))) {
-      e.preventDefault();
-      didPanRef.current = false;
-      panRef.current = {
-        active: true,
-        startX: e.clientX,
-        startY: e.clientY,
-        origX: offset.x,
-        origY: offset.y,
-      };
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    }
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    const pan = panRef.current;
-    if (!pan?.active) return;
-    const dx = e.clientX - pan.startX;
-    const dy = e.clientY - pan.startY;
-    if (Math.hypot(dx, dy) > 3) didPanRef.current = true;
-    setOffset({ x: pan.origX + dx, y: pan.origY + dy });
-  }
-
-  function onPointerUp(e: React.PointerEvent) {
-    if (panRef.current?.active) {
-      panRef.current = null;
-      try {
-        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  function onClick(e: React.MouseEvent) {
-    if (props.readOnly) return;
-    if (didPanRef.current) {
-      didPanRef.current = false;
-      return;
-    }
-    if (e.altKey || e.shiftKey || e.button !== 0) return;
-    if (props.points.length >= 4) return;
-    const pt = screenToImage(e.clientX, e.clientY);
-    if (pt) props.onAddPoint(pt);
-  }
-
-  const centerZoom = (factor: number) => {
-    const vp = viewportRef.current;
-    if (!vp) return;
-    const r = vp.getBoundingClientRect();
-    zoomAt(r.left + r.width / 2, r.top + r.height / 2, factor);
-  };
-
-  return (
-    <div className="ortho-pane">
-      <div className="ortho-pane-toolbar">
-        <span className="ortho-pane-title">{props.title}</span>
-        <div className="row" style={{ gap: "0.35rem" }}>
-          <button type="button" onClick={() => centerZoom(1 / ZOOM_FACTOR)}>
-            −
-          </button>
-          <span className="muted" style={{ minWidth: "4rem", textAlign: "center" }}>
-            {scale >= 1 ? `${Math.round(scale * 100)}%` : `${(scale * 100).toFixed(1)}%`}
-            {loading ? " …" : ""}
-          </span>
-          <button type="button" onClick={() => centerZoom(ZOOM_FACTOR)}>
-            +
-          </button>
-          <button type="button" onClick={fitToView}>
-            {t("alignment.fit")}
-          </button>
-        </div>
-      </div>
-      <div
-        className="ortho-viewport"
-        ref={viewportRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onClick={onClick}
-        onContextMenu={(e) => e.preventDefault()}
-        style={{ cursor: props.readOnly ? "grab" : "crosshair" }}
-      >
-        {hiRes && (
-          <img
-            className="ortho-hires"
-            src={hiRes.url}
-            alt=""
-            draggable={false}
-            style={{
-              left: offset.x + hiRes.col * scale,
-              top: offset.y + hiRes.row * scale,
-              width: hiRes.width * scale,
-              height: hiRes.height * scale,
-            }}
-          />
-        )}
-        {props.points.map((p, i) => (
-          <div
-            key={i}
-            className="point-marker"
-            style={{
-              left: offset.x + p.x * scale,
-              top: offset.y + p.y * scale,
-              ["--marker-accent" as string]: props.accent ?? "var(--danger)",
-            }}
-          >
-            <span className="point-marker-dot" />
-            <span className="point-marker-label">{i + 1}</span>
-          </div>
-        ))}
-        {!hiRes && !loading && (
-          <div className="ortho-empty muted">{t("alignment.waitingOrtho")}</div>
-        )}
-      </div>
-      <div className="ortho-hint muted">
-        {t("alignment.paneHint")}
-        {!props.readOnly && ` ${t("alignment.paneHintClick", { n: props.points.length })}`}
-      </div>
-    </div>
-  );
-}
-
-/** Zoomable overlay of RGB + aligned thermal in RGB pixel / geo space. */
-function OverlayConfirmModal(props: {
+/** Zoomable split compare: RGB left / thermal right with a movable divider. */
+function SplitConfirmModal(props: {
   rgbWidth: number;
   rgbHeight: number;
-  rgbTransform: number[];
   cacheKey: string | number;
   onConfirm: () => void;
   onCancel: () => void;
   busy: boolean;
   title?: string;
+  metaSummary?: string | null;
 }) {
   const t = useT();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [rgbOpacity, setRgbOpacity] = useState(50);
-  const [thermalOpacity, setThermalOpacity] = useState(50);
+  const [splitPct, setSplitPct] = useState(50);
+  const [thermalOpacity, setThermalOpacity] = useState(100);
+  const [thermalOnly, setThermalOnly] = useState(false);
   const [rgbUrl, setRgbUrl] = useState<string | null>(null);
   const [thUrl, setThUrl] = useState<string | null>(null);
   const [frame, setFrame] = useState<{ col: number; row: number; w: number; h: number } | null>(
@@ -341,11 +62,15 @@ function OverlayConfirmModal(props: {
     origX: number;
     origY: number;
   } | null>(null);
+  const splitDragRef = useRef(false);
   const fetchGen = useRef(0);
+  const hasTilesRef = useRef(false);
   const scaleRef = useRef(scale);
   const offsetRef = useRef(offset);
   scaleRef.current = scale;
   offsetRef.current = offset;
+
+  const effectiveSplit = thermalOnly ? 0 : splitPct;
 
   const fitToView = useCallback(() => {
     const vp = viewportRef.current;
@@ -373,7 +98,6 @@ function OverlayConfirmModal(props: {
       fitToView();
     });
     ro.observe(vp);
-    // Layout may settle one frame after mount
     const id = window.requestAnimationFrame(() => {
       fitToView();
     });
@@ -385,8 +109,10 @@ function OverlayConfirmModal(props: {
 
   const refresh = useCallback(async () => {
     const vp = viewportRef.current;
-    if (!vp || !ready || props.rgbWidth < 2 || props.rgbTransform.length < 6) return;
+    if (!vp || !ready || props.rgbWidth < 2) return;
     if (vp.clientWidth < 8 || vp.clientHeight < 8) return;
+    // Keep the current raster while dragging; pointer-up / zoom settle will refetch.
+    if (panRef.current?.active) return;
 
     const s = scaleRef.current;
     const off = offsetRef.current;
@@ -410,11 +136,14 @@ function OverlayConfirmModal(props: {
     };
 
     const gen = ++fetchGen.current;
-    setLoading(true);
+    // Only show loading on the first paint — never flash UI while panning/zooming.
+    const initial = !hasTilesRef.current;
+    if (initial) setLoading(true);
     setLoadError(null);
+    let rgbObject: string | null = null;
+    let thObject: string | null = null;
     try {
-      // Same RGB pixel window for both: thermal is reprojected onto that exact grid
-      // so overlays stay locked at every zoom (not just when zoomed in).
+      // Aligned thermal is native-thermal resolution; reproject onto the RGB window.
       const [rgbRes, thRes] = await Promise.all([
         fetch(api.orthoWindowUrl("rgb", windowQ)),
         fetch(api.orthoMatchRgbWindowUrl("thermal_aligned", windowQ)),
@@ -423,8 +152,15 @@ function OverlayConfirmModal(props: {
       if (!thRes.ok) throw new Error(`Thermal overlay failed: ${await thRes.text()}`);
       const [rgbBlob, thBlob] = await Promise.all([rgbRes.blob(), thRes.blob()]);
       if (gen !== fetchGen.current) return;
-      const rgbObject = URL.createObjectURL(rgbBlob);
-      const thObject = URL.createObjectURL(thBlob);
+      rgbObject = URL.createObjectURL(rgbBlob);
+      thObject = URL.createObjectURL(thBlob);
+      // Decode before swapping so the viewport never blanks between tiles.
+      await Promise.all([loadObjectUrl(rgbObject), loadObjectUrl(thObject)]);
+      if (gen !== fetchGen.current) {
+        URL.revokeObjectURL(rgbObject);
+        URL.revokeObjectURL(thObject);
+        return;
+      }
       setRgbUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return rgbObject;
@@ -433,18 +169,22 @@ function OverlayConfirmModal(props: {
         if (prev) URL.revokeObjectURL(prev);
         return thObject;
       });
+      hasTilesRef.current = true;
       setFrame({ col: left, row: top, w, h });
     } catch (e) {
+      if (rgbObject) URL.revokeObjectURL(rgbObject);
+      if (thObject) URL.revokeObjectURL(thObject);
       if (gen === fetchGen.current) setLoadError(String(e));
     } finally {
-      if (gen === fetchGen.current) setLoading(false);
+      if (gen === fetchGen.current && initial) setLoading(false);
     }
   }, [props.rgbWidth, props.rgbHeight, props.cacheKey, ready]);
 
   useEffect(() => {
     if (!ready) return;
-    const t = window.setTimeout(() => void refresh(), FETCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
+    if (panRef.current?.active) return;
+    const timer = window.setTimeout(() => void refresh(), FETCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
   }, [scale, offset, refresh, ready]);
 
   useEffect(() => {
@@ -483,7 +223,25 @@ function OverlayConfirmModal(props: {
     return () => el.removeEventListener("wheel", onWheelNative);
   }, []);
 
+  function updateSplitFromClientX(clientX: number) {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const rect = vp.getBoundingClientRect();
+    const pct = ((clientX - rect.left) / Math.max(1, rect.width)) * 100;
+    setSplitPct(clamp(pct, 0, 100));
+    if (thermalOnly) setThermalOnly(false);
+  }
+
   function onPointerDown(e: React.PointerEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest(".split-handle")) {
+      e.preventDefault();
+      e.stopPropagation();
+      splitDragRef.current = true;
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      updateSplitFromClientX(e.clientX);
+      return;
+    }
     if (e.button === 0 || e.button === 1) {
       e.preventDefault();
       panRef.current = {
@@ -498,6 +256,10 @@ function OverlayConfirmModal(props: {
   }
 
   function onPointerMove(e: React.PointerEvent) {
+    if (splitDragRef.current) {
+      updateSplitFromClientX(e.clientX);
+      return;
+    }
     const pan = panRef.current;
     if (!pan?.active) return;
     setOffset({
@@ -507,6 +269,15 @@ function OverlayConfirmModal(props: {
   }
 
   function onPointerUp(e: React.PointerEvent) {
+    if (splitDragRef.current) {
+      splitDragRef.current = false;
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     if (panRef.current?.active) {
       panRef.current = null;
       try {
@@ -514,8 +285,18 @@ function OverlayConfirmModal(props: {
       } catch {
         /* ignore */
       }
+      void refresh();
     }
   }
+
+  const imgStyle = frame
+    ? {
+        left: offset.x + frame.col * scale,
+        top: offset.y + frame.row * scale,
+        width: frame.w * scale,
+        height: frame.h * scale,
+      }
+    : undefined;
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -525,7 +306,7 @@ function OverlayConfirmModal(props: {
             <h2>{props.title ?? t("alignment.modalConfirmTitle")}</h2>
             <p className="muted" style={{ margin: 0 }}>
               {t("alignment.modalHint")}
-              {loading ? ` ${t("alignment.modalLoadingTiles")}` : ""}
+              {props.metaSummary ? ` ${props.metaSummary}` : ""}
             </p>
           </div>
           <div className="row">
@@ -540,16 +321,6 @@ function OverlayConfirmModal(props: {
 
         <div className="overlay-controls row">
           <label className="opacity-label">
-            {t("alignment.modalRgbOpacity", { pct: rgbOpacity })}
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={rgbOpacity}
-              onChange={(e) => setRgbOpacity(Number(e.target.value))}
-            />
-          </label>
-          <label className="opacity-label">
             {t("alignment.modalThermalOpacity", { pct: thermalOpacity })}
             <input
               type="range"
@@ -559,13 +330,21 @@ function OverlayConfirmModal(props: {
               onChange={(e) => setThermalOpacity(Number(e.target.value))}
             />
           </label>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={thermalOnly}
+              onChange={(e) => setThermalOnly(e.target.checked)}
+            />
+            {t("alignment.thermalOnly")}
+          </label>
           <button type="button" onClick={() => fitToView()}>
             {t("alignment.fit")}
           </button>
         </div>
 
         <div
-          className="ortho-viewport overlay-viewport"
+          className="ortho-viewport overlay-viewport split-viewport"
           ref={viewportRef}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -587,35 +366,40 @@ function OverlayConfirmModal(props: {
             </div>
           )}
           {frame && rgbUrl && (
-            <img
-              className="ortho-hires"
-              src={rgbUrl}
-              alt={t("alignment.modalAltRgb")}
-              draggable={false}
-              style={{
-                left: offset.x + frame.col * scale,
-                top: offset.y + frame.row * scale,
-                width: frame.w * scale,
-                height: frame.h * scale,
-                opacity: rgbOpacity / 100,
-              }}
-            />
+            <div className="split-layer split-layer-rgb" style={{ clipPath: `inset(0 ${100 - effectiveSplit}% 0 0)` }}>
+              <img
+                className="ortho-hires"
+                src={rgbUrl}
+                alt={t("alignment.modalAltRgb")}
+                draggable={false}
+                style={imgStyle}
+              />
+            </div>
           )}
           {frame && thUrl && (
-            <img
-              className="ortho-hires"
-              src={thUrl}
-              alt={t("alignment.modalAltThermal")}
-              draggable={false}
+            <div
+              className="split-layer split-layer-thermal"
               style={{
-                left: offset.x + frame.col * scale,
-                top: offset.y + frame.row * scale,
-                width: frame.w * scale,
-                height: frame.h * scale,
+                clipPath: `inset(0 0 0 ${effectiveSplit}%)`,
                 opacity: thermalOpacity / 100,
-                mixBlendMode: "normal",
               }}
-            />
+            >
+              <img
+                className="ortho-hires"
+                src={thUrl}
+                alt={t("alignment.modalAltThermal")}
+                draggable={false}
+                style={imgStyle}
+              />
+            </div>
+          )}
+          {frame && !thermalOnly && (
+            <div className="split-handle" style={{ left: `${effectiveSplit}%` }} aria-hidden>
+              <div className="split-handle-line" />
+              <div className="split-handle-knob" title={t("alignment.splitDrag")}>
+                ⟷
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -630,14 +414,13 @@ export function OrthoAlignmentView(props: {
 }) {
   const t = useT();
   const { noteLocal } = useConsole();
-  const [refPts, setRefPts] = useState<Pt[]>([]);
-  const [tgtPts, setTgtPts] = useState<Pt[]>([]);
+  const [params, setParams] = useState<AlignmentParams>({ ...DEFAULT_PARAMS });
+  const [defaults, setDefaults] = useState<AlignmentParams>({ ...DEFAULT_PARAMS });
   const [meta, setMeta] = useState<{
-    rgb: { width: number; height: number; transform: number[] };
-    thermal: { width: number; height: number };
+    rgb: { width: number; height: number };
+    lastMeta?: AlignmentStatus["meta"];
   }>({
-    rgb: { width: 0, height: 0, transform: [] },
-    thermal: { width: 0, height: 0 },
+    rgb: { width: 0, height: 0 },
   });
   const [busy, setBusy] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -648,13 +431,28 @@ export function OrthoAlignmentView(props: {
   const loadStatus = useCallback(async () => {
     try {
       const st = await api.alignmentStatus();
+      if (st.defaults) {
+        setDefaults({ ...DEFAULT_PARAMS, ...st.defaults });
+      }
       const done = st.status === "done" && st.has_aligned;
       setAlignmentDone(done);
       if (st.aligned_mtime_ns) setCacheKey(st.aligned_mtime_ns);
       setStatusMsg(st.message ?? null);
-      if (st.gcps?.ref_points?.length && st.gcps?.target_points?.length) {
-        setRefPts(st.gcps.ref_points.map(([x, y]) => ({ x, y })));
-        setTgtPts(st.gcps.target_points.map(([x, y]) => ({ x, y })));
+      const base = { ...DEFAULT_PARAMS, ...(st.defaults ?? {}) };
+      if (st.params) {
+        setParams({
+          max_reg_gsd_m: st.params.max_reg_gsd_m ?? base.max_reg_gsd_m,
+          global_max_m: st.params.global_max_m ?? base.global_max_m,
+          local_max_m: st.params.local_max_m ?? base.local_max_m,
+          tile_m: st.params.tile_m ?? base.tile_m,
+          stride_m: st.params.stride_m ?? base.stride_m,
+          nodata: st.params.nodata ?? base.nodata,
+        });
+      } else {
+        setParams({ ...base });
+      }
+      if (st.meta) {
+        setMeta((m) => ({ ...m, lastMeta: st.meta }));
       }
     } catch {
       /* ignore */
@@ -663,13 +461,13 @@ export function OrthoAlignmentView(props: {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.orthoMeta("rgb"), api.orthoMeta("thermal"), loadStatus()])
-      .then(([rgb, th]) => {
+    Promise.all([api.orthoMeta("rgb"), loadStatus()])
+      .then(([rgb]) => {
         if (cancelled) return;
-        setMeta({
-          rgb: { width: rgb.width, height: rgb.height, transform: rgb.transform ?? [] },
-          thermal: { width: th.width, height: th.height },
-        });
+        setMeta((m) => ({
+          ...m,
+          rgb: { width: rgb.width, height: rgb.height },
+        }));
       })
       .catch((e) => {
         if (!cancelled) props.onError(String(e));
@@ -680,20 +478,28 @@ export function OrthoAlignmentView(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.project.manifest.id, props.project.root, loadStatus]);
 
+  function setParam(key: keyof AlignmentParams, value: number) {
+    setParams((p) => ({ ...p, [key]: value }));
+  }
+
   async function preview() {
-    if (refPts.length < 4 || tgtPts.length < 4) {
-      props.onError(t("alignment.errorNeed4Points"));
+    if (
+      !(params.max_reg_gsd_m > 0) ||
+      !(params.global_max_m > 0) ||
+      !(params.local_max_m > 0) ||
+      !(params.tile_m > 0) ||
+      !(params.stride_m > 0)
+    ) {
+      props.onError(t("alignment.errorBadParams"));
       return;
     }
     setBusy(true);
     noteLocal(t("alignment.consolePreviewTitle"), t("alignment.consolePreviewDetail"));
     try {
-      const p = await api.previewAlignment(
-        refPts.map((pt) => [pt.x, pt.y]),
-        tgtPts.map((pt) => [pt.x, pt.y]),
-      );
+      const p = await api.previewAlignment(params);
       if (p.aligned_mtime_ns) setCacheKey(p.aligned_mtime_ns);
       else setCacheKey(Date.now());
+      if (p.meta) setMeta((m) => ({ ...m, lastMeta: p.meta ?? null }));
       props.onApplied(p);
       setShowConfirm(true);
     } catch (e) {
@@ -719,6 +525,20 @@ export function OrthoAlignmentView(props: {
     }
   }
 
+  const last = meta.lastMeta;
+  const metaSummary =
+    last && typeof last.runtime_s === "number"
+      ? t("alignment.metaSummary", {
+          runtime: last.runtime_s.toFixed(1),
+          ctrl: String(last.ctrl_pts ?? "—"),
+          workGsd:
+            typeof last.gsd_work_m === "number"
+              ? (last.gsd_work_m * 100).toFixed(1)
+              : "—",
+          pass1: String(last.pass1 ?? "—"),
+        })
+      : null;
+
   return (
     <div className="ortho-alignment">
       <div className="card" style={{ marginBottom: "1rem", maxWidth: "none" }}>
@@ -732,28 +552,77 @@ export function OrthoAlignmentView(props: {
         ) : (
           <p>{t("alignment.intro")}</p>
         )}
-        <div className="row">
+
+        <div className="align-params">
+          <label>
+            {t("alignment.paramMaxRegGsd")}
+            <input
+              type="number"
+              min={0.005}
+              step={0.005}
+              value={params.max_reg_gsd_m}
+              onChange={(e) => setParam("max_reg_gsd_m", Number(e.target.value))}
+            />
+          </label>
+          <label>
+            {t("alignment.paramGlobalMax")}
+            <input
+              type="number"
+              min={0.01}
+              step={0.1}
+              value={params.global_max_m}
+              onChange={(e) => setParam("global_max_m", Number(e.target.value))}
+            />
+          </label>
+          <label>
+            {t("alignment.paramLocalMax")}
+            <input
+              type="number"
+              min={0.01}
+              step={0.05}
+              value={params.local_max_m}
+              onChange={(e) => setParam("local_max_m", Number(e.target.value))}
+            />
+          </label>
+          <label>
+            {t("alignment.paramTile")}
+            <input
+              type="number"
+              min={0.01}
+              step={0.01}
+              value={params.tile_m}
+              onChange={(e) => setParam("tile_m", Number(e.target.value))}
+            />
+          </label>
+          <label>
+            {t("alignment.paramStride")}
+            <input
+              type="number"
+              min={0.01}
+              step={0.01}
+              value={params.stride_m}
+              onChange={(e) => setParam("stride_m", Number(e.target.value))}
+            />
+          </label>
+        </div>
+
+        <div className="row" style={{ marginTop: "0.85rem" }}>
           <span className="muted">
-            {t("alignment.progress", { rgb: refPts.length, thermal: tgtPts.length })}
-            {meta.rgb.width > 0
-              ? ` · ${meta.rgb.width}×${meta.rgb.height} / ${meta.thermal.width}×${meta.thermal.height} px`
-              : ""}
+            {meta.rgb.width > 0 ? `${meta.rgb.width}×${meta.rgb.height} px` : t("alignment.waitingOrtho")}
             {alignmentDone ? ` ${t("alignment.statusDone")}` : ""}
+            {metaSummary ? ` · ${metaSummary}` : ""}
           </span>
           <button
             type="button"
-            onClick={() => {
-              setRefPts([]);
-              setTgtPts([]);
-              setAlignmentDone(false);
-            }}
+            onClick={() => setParams({ ...defaults })}
+            disabled={busy}
           >
-            {t("alignment.resetPoints")}
+            {t("alignment.resetDefaults")}
           </button>
           {alignmentDone && (
             <button
               type="button"
-              disabled={busy || !meta.rgb.transform.length}
+              disabled={busy || meta.rgb.width < 2}
               onClick={() => setShowConfirm(true)}
             >
               {t("alignment.reviewOverlay")}
@@ -762,44 +631,28 @@ export function OrthoAlignmentView(props: {
           <button
             type="button"
             className="primary"
-            disabled={busy || refPts.length < 4 || tgtPts.length < 4}
-            onClick={preview}
+            disabled={busy || meta.rgb.width < 2}
+            onClick={() => void preview()}
           >
-            {alignmentDone ? t("alignment.rePreview") : t("alignment.preview")}
+            {busy
+              ? t("alignment.previewRunning")
+              : alignmentDone
+                ? t("alignment.rePreview")
+                : t("alignment.preview")}
           </button>
         </div>
       </div>
-      <div className="align-grid">
-        <OrthoPane
-          title={t("alignment.paneRgb")}
-          layerId="rgb"
-          imageWidth={meta.rgb.width}
-          imageHeight={meta.rgb.height}
-          points={refPts}
-          accent="var(--rgb)"
-          onAddPoint={(pt) => setRefPts((p) => (p.length >= 4 ? p : [...p, pt]))}
-        />
-        <OrthoPane
-          title={t("alignment.paneThermal")}
-          layerId="thermal"
-          imageWidth={meta.thermal.width}
-          imageHeight={meta.thermal.height}
-          points={tgtPts}
-          accent="var(--thermal)"
-          onAddPoint={(pt) => setTgtPts((p) => (p.length >= 4 ? p : [...p, pt]))}
-        />
-      </div>
 
-      {showConfirm && meta.rgb.transform.length >= 6 && (
-        <OverlayConfirmModal
+      {showConfirm && meta.rgb.width >= 2 && (
+        <SplitConfirmModal
           rgbWidth={meta.rgb.width}
           rgbHeight={meta.rgb.height}
-          rgbTransform={meta.rgb.transform}
           cacheKey={cacheKey}
           busy={busy}
+          metaSummary={metaSummary}
           title={alignmentDone ? t("alignment.modalReviewTitle") : t("alignment.modalConfirmTitle")}
           onCancel={() => setShowConfirm(false)}
-          onConfirm={confirm}
+          onConfirm={() => void confirm()}
         />
       )}
     </div>

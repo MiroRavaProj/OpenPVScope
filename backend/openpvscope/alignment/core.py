@@ -1,109 +1,162 @@
-"""4-point affine alignment (from ortho_aligner) — metadata-only GeoTIFF rewrite."""
+"""AKAZE affine + metre-tile TPS thermal→RGB alignment."""
 
 from __future__ import annotations
 
+import gc
 import json
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Any
 
-import numpy as np
+from openpvscope.alignment.register_thermal import (
+    GLOBAL_MAX_M,
+    LOCAL_MAX_M,
+    MAX_REG_GSD_M,
+    NODATA,
+    STRIDE_M,
+    TILE_M,
+    register_thermal_to_rgb,
+)
 
-
-def estimate_affine(
-    target_points: Sequence[Sequence[float]],
-    ref_points: Sequence[Sequence[float]],
-) -> np.ndarray:
-    """
-    Estimate 3x3 affine matrix mapping target pixel coords → reference pixel coords.
-    Requires at least 4 point pairs.
-    """
-    src = np.asarray(target_points, dtype=np.float64)
-    dst = np.asarray(ref_points, dtype=np.float64)
-    if src.shape[0] < 4 or dst.shape[0] < 4:
-        raise ValueError("At least 4 corresponding points are required")
-    if src.shape != dst.shape:
-        raise ValueError("Point arrays must have the same shape")
-
-    from skimage.transform import AffineTransform
-
-    tform = AffineTransform()
-    if not tform.estimate(src, dst):
-        raise RuntimeError("Failed to estimate affine transform from control points")
-    if tform.params is None:
-        raise RuntimeError("Affine transform has no parameters")
-    return np.asarray(tform.params, dtype=np.float64)
+DEFAULT_PARAMS: dict[str, float] = {
+    "max_reg_gsd_m": float(MAX_REG_GSD_M),
+    "global_max_m": float(GLOBAL_MAX_M),
+    "local_max_m": float(LOCAL_MAX_M),
+    "tile_m": float(TILE_M),
+    "stride_m": float(STRIDE_M),
+    "nodata": float(NODATA),
+}
 
 
-def apply_georef_rewrite(
+def _run_alignment_subprocess(
     reference_path: Path,
     target_path: Path,
     output_path: Path,
-    target_points: Sequence[Sequence[float]],
-    ref_points: Sequence[Sequence[float]],
-) -> dict:
-    """
-    Write a copy of the target GeoTIFF with updated transform so that target
-    pixels map into the reference CRS/world coordinates.
+    *,
+    max_reg_gsd_m: float,
+    global_max_m: float,
+    local_max_m: float,
+    tile_m: float,
+    stride_m: float,
+    nodata: float,
+) -> dict[str, Any]:
+    """Run registration in a child process so peak RAM is released on exit."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    script = Path(__file__).with_name("register_thermal.py").resolve()
+    with tempfile.TemporaryDirectory(prefix="openpvscope_align_") as tmp:
+        meta_path = Path(tmp) / "meta.json"
+        cmd = [
+            sys.executable,
+            str(script),
+            str(reference_path),
+            str(target_path),
+            "-o",
+            str(output_path),
+            "--nodata",
+            str(nodata),
+            "--max-reg-gsd-m",
+            str(max_reg_gsd_m),
+            "--global-max-m",
+            str(global_max_m),
+            "--local-max-m",
+            str(local_max_m),
+            "--tile-m",
+            str(tile_m),
+            "--stride-m",
+            str(stride_m),
+            "--meta-json",
+            str(meta_path),
+        ]
+        gc.collect()
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                err or f"Alignment subprocess failed (exit {proc.returncode})"
+            )
+        if not meta_path.is_file():
+            raise RuntimeError("Alignment subprocess finished but wrote no metadata")
+        return json.loads(meta_path.read_text(encoding="utf-8"))
 
-    Does NOT resample pixel values — only updates georeferencing metadata.
-    """
-    import rasterio
-    from rasterio.transform import Affine
 
-    affine_matrix = estimate_affine(target_points, ref_points)
-    affine_px = Affine(
-        affine_matrix[0, 0],
-        affine_matrix[0, 1],
-        affine_matrix[0, 2],
-        affine_matrix[1, 0],
-        affine_matrix[1, 1],
-        affine_matrix[1, 2],
+def run_alignment(
+    reference_path: Path,
+    target_path: Path,
+    output_path: Path,
+    *,
+    max_reg_gsd_m: float = float(MAX_REG_GSD_M),
+    global_max_m: float = float(GLOBAL_MAX_M),
+    local_max_m: float = float(LOCAL_MAX_M),
+    tile_m: float = float(TILE_M),
+    stride_m: float = float(STRIDE_M),
+    nodata: float = float(NODATA),
+    isolate: bool = True,
+) -> dict[str, Any]:
+    """Register thermal to RGB via AKAZE/affine Pass 1 + metre-tile TPS Pass 2."""
+    kwargs = dict(
+        nodata=nodata,
+        max_reg_gsd_m=max_reg_gsd_m,
+        global_max_m=global_max_m,
+        local_max_m=local_max_m,
+        tile_m=tile_m,
+        stride_m=stride_m,
     )
-
-    with rasterio.open(reference_path) as ref_ds, rasterio.open(target_path) as tgt_ds:
-        new_transform = ref_ds.transform * affine_px
-        profile = tgt_ds.profile.copy()
-        profile["transform"] = new_transform
-        # Prefer reference CRS if target CRS was wrong/missing
-        if ref_ds.crs:
-            profile["crs"] = ref_ds.crs
-        data = tgt_ds.read()
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(output_path, "w", **profile) as dst:
-            dst.write(data)
-
-    return {
-        "output": str(output_path),
-        "affine_matrix": affine_matrix.tolist(),
-        "transform": list(new_transform)[:6],
-    }
+    try:
+        if isolate:
+            return _run_alignment_subprocess(
+                reference_path, target_path, output_path, **kwargs
+            )
+        return register_thermal_to_rgb(reference_path, target_path, output_path, **kwargs)
+    finally:
+        gc.collect()
 
 
 def save_alignment_artifacts(
     project_root: Path,
-    ref_points: Sequence[Sequence[float]],
-    target_points: Sequence[Sequence[float]],
-    result: dict,
+    params: dict[str, Any],
+    meta: dict[str, Any],
 ) -> None:
     align_dir = Path(project_root) / "alignment"
     align_dir.mkdir(parents=True, exist_ok=True)
-    (align_dir / "gcps.json").write_text(
-        json.dumps(
-            {
-                "ref_points": [list(p) for p in ref_points],
-                "target_points": [list(p) for p in target_points],
-            },
-            indent=2,
-        ),
+    (align_dir / "params.json").write_text(
+        json.dumps(params, indent=2),
         encoding="utf-8",
     )
     (align_dir / "transform.json").write_text(
         json.dumps(
             {
-                "affine_matrix": result["affine_matrix"],
-                "transform": result["transform"],
-                "output": result["output"],
+                "method": meta.get("method", "akaze_tps"),
+                "output": meta.get("output_path"),
+                "pass1_output": meta.get("pass1_output_path"),
+                "output_grid": meta.get("output_grid", "native_thermal"),
+                "pass1": meta.get("pass1"),
+                "gsd_work_m": meta.get("gsd_work_m"),
+                "gsd_thermal_m": meta.get("gsd_thermal_m"),
+                "max_reg_gsd_m": meta.get("max_reg_gsd_m"),
+                "work_shape_hw": meta.get("work_shape_hw"),
+                "native_shape_hw": meta.get("native_shape_hw"),
+                "affine_2x3_work": meta.get("affine_2x3_work"),
+                "n_tile_pairs": meta.get("n_tile_pairs"),
+                "n_akaze_matches": meta.get("n_akaze_matches"),
+                "n_matches": meta.get("n_matches"),
+                "n_inliers": meta.get("n_inliers"),
+                "scale_x": meta.get("scale_x"),
+                "scale_y": meta.get("scale_y"),
+                "rotation_deg": meta.get("rotation_deg"),
+                "tx": meta.get("tx"),
+                "ty": meta.get("ty"),
+                "ecc_cc": meta.get("ecc_cc"),
+                "ctrl_pts": meta.get("ctrl_pts"),
+                "tile_px": meta.get("tile_px"),
+                "stride_px": meta.get("stride_px"),
+                "prep_reproject_s": meta.get("prep_reproject_s"),
+                "global_pass1_s": meta.get("global_pass1_s"),
+                "tile_tps_s": meta.get("tile_tps_s"),
+                "runtime_s": meta.get("runtime_s"),
+                "params": params,
             },
             indent=2,
         ),

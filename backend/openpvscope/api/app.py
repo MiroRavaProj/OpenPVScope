@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from openpvscope import __version__
-from openpvscope.alignment import apply_georef_rewrite, save_alignment_artifacts
+from openpvscope.alignment import DEFAULT_PARAMS, run_alignment, save_alignment_artifacts
 from openpvscope.console import get_console
 from openpvscope.detection import (
     clear_detection,
@@ -136,8 +136,12 @@ class ImportOpszBody(BaseModel):
 
 
 class AlignBody(BaseModel):
-    ref_points: list[list[float]]
-    target_points: list[list[float]]
+    max_reg_gsd_m: float = Field(default=DEFAULT_PARAMS["max_reg_gsd_m"], gt=0)
+    global_max_m: float = Field(default=DEFAULT_PARAMS["global_max_m"], gt=0)
+    local_max_m: float = Field(default=DEFAULT_PARAMS["local_max_m"], gt=0)
+    tile_m: float = Field(default=DEFAULT_PARAMS["tile_m"], gt=0)
+    stride_m: float = Field(default=DEFAULT_PARAMS["stride_m"], gt=0)
+    nodata: float = Field(default=DEFAULT_PARAMS["nodata"])
 
 
 class SkipPhotoBody(BaseModel):
@@ -941,10 +945,17 @@ def photogrammetry_status(modality: str) -> dict[str, Any]:
     }
 
 
-def _refresh_overlays(store) -> None:
+def _refresh_overlays(store, *, only: set[str] | None = None) -> None:
     root = store.root
     overlay_dir = root / "work" / "overlays"
-    for key, path in (("rgb", ortho_rgb(root)), ("thermal", ortho_thermal(root)), ("thermal_aligned", ortho_thermal_aligned(root))):
+    layers = (
+        ("rgb", ortho_rgb(root)),
+        ("thermal", ortho_thermal(root)),
+        ("thermal_aligned", ortho_thermal_aligned(root)),
+    )
+    for key, path in layers:
+        if only is not None and key not in only:
+            continue
         if path.is_file():
             try:
                 create_preview_png(path, overlay_dir / f"{key}.png")
@@ -1203,12 +1214,17 @@ def alignment_status() -> dict[str, Any]:
     if not store.is_open:
         raise HTTPException(404, "No project open")
     wf = store.read_workflow()
-    gcps_path = store.root / "alignment" / "gcps.json"
-    gcps = None
-    if gcps_path.is_file():
-        import json
+    import json
 
-        gcps = json.loads(gcps_path.read_text(encoding="utf-8"))
+    align_dir = store.root / "alignment"
+    params = None
+    meta = None
+    params_path = align_dir / "params.json"
+    transform_path = align_dir / "transform.json"
+    if params_path.is_file():
+        params = json.loads(params_path.read_text(encoding="utf-8"))
+    if transform_path.is_file():
+        meta = json.loads(transform_path.read_text(encoding="utf-8"))
     aligned = ortho_thermal_aligned(store.root)
     mtime_ns = int(aligned.stat().st_mtime_ns) if aligned.is_file() else None
     return {
@@ -1216,13 +1232,15 @@ def alignment_status() -> dict[str, Any]:
         "message": wf.alignment.message,
         "has_aligned": aligned.is_file(),
         "aligned_mtime_ns": mtime_ns,
-        "gcps": gcps,
+        "defaults": DEFAULT_PARAMS,
+        "params": params,
+        "meta": meta,
     }
 
 
 @app.post("/api/alignment/preview")
 def alignment_preview(body: AlignBody) -> dict[str, Any]:
-    """Write aligned thermal + GCPs without marking the workflow step done."""
+    """Run Phase→TPS registration and write aligned thermal without marking the step done."""
     store = get_store()
     console = get_console()
     if not store.is_open:
@@ -1232,26 +1250,50 @@ def alignment_preview(body: AlignBody) -> dict[str, Any]:
     if not rgb.is_file() or not thermal.is_file():
         raise HTTPException(400, "RGB and thermal orthophotos required")
     out = ortho_thermal_aligned(store.root)
-    console.begin_job("Ortho alignment preview", detail="Estimating affine transform")
+    params = {
+        "max_reg_gsd_m": body.max_reg_gsd_m,
+        "global_max_m": body.global_max_m,
+        "local_max_m": body.local_max_m,
+        "tile_m": body.tile_m,
+        "stride_m": body.stride_m,
+        "nodata": body.nodata,
+    }
+    console.begin_job(
+        "Ortho alignment preview",
+        detail="AKAZE affine + metre-tile TPS (isolated process)",
+    )
     store.checkpoint("Before ortho alignment preview")
     try:
-        console.set_progress(15, detail="Reading control points", step="gcps")
-        console.set_progress(35, detail="Estimating 4-point affine", step="affine")
-        result = apply_georef_rewrite(
-            rgb, thermal, out, body.target_points, body.ref_points
+        import gc
+
+        gc.collect()
+        console.set_progress(
+            20,
+            detail="Running AKAZE→TPS in a worker process",
+            step="akaze_tps",
         )
-        console.set_progress(70, detail="Writing thermal_aligned.tif (metadata rewrite)", step="write")
-        save_alignment_artifacts(store.root, body.ref_points, body.target_points, result)
-        console.set_progress(88, detail="Refreshing map overlays", step="overlays")
-        _refresh_overlays(store)
+        meta = run_alignment(rgb, thermal, out, **params)
+        console.set_progress(88, detail="Saving alignment metadata", step="write")
+        save_alignment_artifacts(store.root, params, meta)
+        console.set_progress(94, detail="Refreshing aligned overlay", step="overlays")
+        # Only rebuild the new layer — re-reading RGB/thermal previews wastes RAM/time.
+        _refresh_overlays(store, only={"thermal_aligned"})
         store.autosave()
-        console.end_job(ok=True, message="Alignment preview ready — check the overlay")
+        gc.collect()
+        runtime = meta.get("runtime_s")
+        runtime_s = f"{runtime:.1f}s" if isinstance(runtime, (int, float)) else "?"
+        console.end_job(
+            ok=True,
+            message=f"Alignment preview ready — check the split view ({runtime_s})",
+        )
     except Exception as e:
         console.end_job(ok=False, message=str(e))
         raise HTTPException(400, str(e)) from e
     mtime_ns = int(out.stat().st_mtime_ns) if out.is_file() else None
     return {
-        "result": result,
+        "result": meta,
+        "meta": meta,
+        "params": params,
         "preview": True,
         "has_aligned": True,
         "aligned_mtime_ns": mtime_ns,
@@ -1269,7 +1311,12 @@ def alignment_confirm() -> dict[str, Any]:
         raise HTTPException(400, "No aligned thermal orthophoto to confirm")
     console.begin_job("Save alignment", detail="Updating workflow")
     try:
-        mark_step(store, "alignment", StepStatus.DONE, message="Thermal georef aligned to RGB")
+        mark_step(
+            store,
+            "alignment",
+            StepStatus.DONE,
+            message="Thermal aligned to RGB (AKAZE + TPS)",
+        )
         store.autosave()
         console.end_job(ok=True, message="Alignment saved")
     except Exception as e:
