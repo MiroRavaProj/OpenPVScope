@@ -238,19 +238,19 @@ export const es: Dict = {
       "Copia el AOI + cuadrícula RGB a la modalidad térmica (mismas esquinas/celdas en WGS84). Luego ajusta las esquinas térmicas si es necesario.",
     confRgb: "Confianza de coincidencia RGB",
     confRgbTitle:
-      "Umbral de coincidencia RGB (0–1). Más alto = menos cajas RGB, más estrictas; más bajo = más detecciones, incluidas coincidencias débiles. Predeterminado 0.5.",
+      "Umbral de coincidencia RGB (0–1). Más alto = menos cajas RGB, más estrictas; más bajo = más detecciones, incluidas coincidencias débiles. Predeterminado 0.65.",
     confThermal: "Confianza de coincidencia térmica",
     confThermalTitle:
-      "Umbral de coincidencia térmica (0–1). Más alto = menos cajas térmicas; más bajo = más detecciones (las puntuaciones térmicas suelen ser más bajas que las RGB). Predeterminado 0.5.",
+      "Umbral de coincidencia térmica (0–1). Más alto = menos cajas térmicas; más bajo = más detecciones (las puntuaciones térmicas suelen ser más bajas que las RGB). Predeterminado 0.65.",
     thermalMatchModeAria: "Modo de coincidencia térmica",
     thermalMatchModeTitle:
-      "Cómo se emparejan las plantillas térmicas. Compara modos en la misma cuadrícula; RGB no cambia.",
+      "Cómo se emparejan las plantillas térmicas. Compara modos en la misma cuadrícula; RGB no cambia. Predeterminado: +15% contexto.",
     thermalMatchModeHint: "Matcher térmico (compara modos y vuelve a detectar)",
     thermalMatchDefault: "Por defecto",
     thermalMatchDefaultTitle: "Coincidencia clásica en escala de grises sobre temperatura.",
     thermalMatchContext: "+15% contexto",
     thermalMatchContextTitle:
-      "Coincidencia con plantillas ampliadas un 15% por lado; cajas a tamaño exacto del panel.",
+      "Coincidencia con plantillas ampliadas un 15% por lado; cajas a tamaño exacto del panel. Modo predeterminado.",
     thermalMatchGradient: "Gradiente",
     thermalMatchGradientTitle:
       "Coincidencia sobre magnitud de bordes Sobel en lugar de °C crudos.",
@@ -262,12 +262,14 @@ export const es: Dict = {
     templatesSome: "{{n}} de {{total}}",
     templatesTitle:
       "Cuántas celdas de la cuadrícula usar como plantillas. 0 = todas las celdas (más lento, mejor cobertura). Más alto = más variedad de plantillas cuando los paneles difieren; más bajo = más rápido, menos cobertura.",
-    tempCap: "Límite de temperatura térmica °C (predeterminado 45)",
+    tempCap: "Límite de temperatura térmica °C",
     tempCapTitle:
-      "Solo térmico: limita las temperaturas de la imagen de búsqueda por encima de este °C. Más alto = conserva los píxeles más calientes; más bajo = suprime más los valores atípicos calientes. Predeterminado 45 °C.",
+      "Solo térmico: limita las temperaturas de la imagen de búsqueda por encima de este °C. Predeterminado = mediana de las temperaturas de los píxeles dentro de la cuadrícula térmica + 10 °C (se recalcula al generar o copiar la cuadrícula térmica).",
     advancedValidation: "Validación avanzada (refinamiento)",
     advancedValidationTitle:
-      "Ajuste posterior a NMS: ajuste de cuadrícula DBSCAN → poda de bordes → relleno de Conway. Activado = arreglos regulares más limpios; desactivado = solo la salida bruta del comparador.",
+      "Ajuste posterior a NMS: ajuste de cuadrícula DBSCAN → poda de bordes → relleno de Conway. Activado = arreglos regulares más limpios; desactivado (predeterminado) = solo la salida bruta del comparador.",
+    cancel: "Cancelar",
+    cancelTitle: "Detener la detección en curso",
     fineTune: "Ajustar confianza",
     fineTuneTitle:
       "Refina el umbral de confianza. Más alto = conserva solo los picos fuertes (poda más estricta); más bajo = conserva más detecciones débiles / fuera de cuadrícula. Predeterminado 0.65.",
@@ -303,11 +305,19 @@ export const es: Dict = {
     margin: "Margen",
     marginTitle:
       "Borde adicional alrededor de los recortes de vista previa enderezados. Más alto = más contexto alrededor del panel; más bajo = recorte más ajustado al panel.",
-    minIou: "IoU mínima",
+    minIou: "IoU mínima {{value}}",
     minIouTitle:
-      "IoU mínima del centro para aceptar un par RGB↔térmico. Más alta = solo coincidencias estrictas; más baja = conserva pares más débiles / distantes.",
+      "Solapamiento (0–1) requerido entre detección RGB y térmica. Arrastra para previsualizar los pares en el mapa; luego ejecuta la extracción. Predeterminado 0.75 = solo solapamientos fuertes.",
+    previewHint: "Vista previa de pares: {{count}}. Ajusta la IoU mínima y extrae cuando las cajas estén bien.",
+    removeIsolated: "Quitar aislados",
+    removeIsolatedTitle:
+      "Excluye paneles sin vecino a un pitch izquierda/derecha/arriba/abajo. Los quita de la selección de detección y de los resultados de segmentación.",
+    isolatedRemoved:
+      "Aislados eliminados: RGB {{rgb}}, térmico {{thermal}}, pares extraídos {{pairs}}.",
     run: "Ejecutar emparejamiento y extracción",
     extracting: "Extrayendo…",
+    cancel: "Cancelar",
+    cancelTitle: "Detener la segmentación en curso",
     runTitle: "Empareja las detecciones RGB y térmicas, luego extrae los recortes enderezados y las estadísticas térmicas.",
     saveLabels: "Guardar etiquetas",
     saveLabelsTitle:
@@ -430,6 +440,8 @@ export const es: Dict = {
     preview: "Vista previa de alineación",
     rePreview: "Regenerar vista previa de alineación",
     previewRunning: "Ejecutando…",
+    cancel: "Cancelar",
+    cancelTitle: "Detener la alineación en curso",
     fit: "Ajustar",
     waitingOrtho: "Esperando la ortofoto…",
     paramMaxRegGsd: "GSD máx. registro (m)",
@@ -440,6 +452,10 @@ export const es: Dict = {
     errorBadParams: "Todos los parámetros de alineación deben ser números positivos.",
     consolePreviewTitle: "Vista previa de alineación de orto",
     consolePreviewDetail: "Correlación de fase + TPS por teselas métricas — escribiendo el GeoTIFF alineado…",
+    consoleCancelTitle: "Cancelando alineación",
+    consoleCancelDetail: "Deteniendo el proceso de alineación…",
+    consoleCancelledTitle: "Alineación cancelada",
+    consoleCancelledDetail: "Vista previa detenida. Ajusta los parámetros e inténtalo de nuevo.",
     consoleSaveTitle: "Guardando alineación",
     consoleSaveDetail: "Marcando la alineación de orto como completada…",
     statusAligned: "Térmico alineado con RGB (phase + TPS)",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
   AppSettings,
@@ -144,15 +144,10 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
     }
   }, [refresh]);
 
-  const activeStep = useMemo(() => {
-    if (!project) return "photogrammetry" as PipelineStep;
-    const active = STEPS.find((s) => project.workflow[s]?.status === "active");
-    return active ?? step;
-  }, [project, step]);
-
-  useEffect(() => {
-    if (project) setStep(activeStep);
-  }, [project, activeStep]);
+  function stepFromWorkflow(p: ProjectPayload): PipelineStep {
+    const active = STEPS.find((s) => p.workflow[s]?.status === "active");
+    return active ?? "photogrammetry";
+  }
 
   const hist = project?.history;
 
@@ -245,6 +240,7 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
         setBusy(true);
         const p = await api.openProject(path);
         setProject(p);
+        setStep(stepFromWorkflow(p));
         await loadWelcomeExtras();
       }
     } catch (e) {
@@ -265,6 +261,7 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
     try {
       const p = await api.openProject(pth);
       setProject(p);
+      setStep(stepFromWorkflow(p));
       setOpenPath(pth);
       await loadWelcomeExtras();
     } catch (e) {
@@ -303,6 +300,7 @@ function AppInner(props: { onLanguageChange: (lang: AppLanguage) => void }) {
       setBusy(true);
       const p = await api.importOpsz(opsz.path, dest.path);
       setProject(p);
+      setStep(stepFromWorkflow(p));
       await loadWelcomeExtras();
     } catch (e) {
       setError(String(e));

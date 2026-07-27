@@ -130,15 +130,9 @@ export function PlantWorkspace(props: {
             editCorners={editCorners}
             setEditCorners={setEditCorners}
             displayConfidenceRgb={displayConfidenceRgb}
-            setDisplayConfidenceRgb={(v) => {
-              setDisplayConfidenceRgb(v);
-              bumpMap();
-            }}
+            setDisplayConfidenceRgb={setDisplayConfidenceRgb}
             displayConfidenceThermal={displayConfidenceThermal}
-            setDisplayConfidenceThermal={(v) => {
-              setDisplayConfidenceThermal(v);
-              bumpMap();
-            }}
+            setDisplayConfidenceThermal={setDisplayConfidenceThermal}
             onRefreshMap={bumpMap}
             onProjectRefresh={onProjectRefresh}
             onError={props.onError}

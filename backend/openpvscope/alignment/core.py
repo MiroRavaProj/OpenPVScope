@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,54 @@ DEFAULT_PARAMS: dict[str, float] = {
     "nodata": float(NODATA),
 }
 
+_proc_lock = threading.Lock()
+_align_proc: subprocess.Popen[str] | None = None
+_cancel_requested = False
+
+
+class AlignmentCancelled(RuntimeError):
+    """Raised when alignment subprocess is killed by user cancel."""
+
+
+def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
+    if proc.poll() is not None:
+        return
+    pid = proc.pid
+    if sys.platform == "win32" and pid:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            return
+        except Exception:
+            pass
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def request_cancel_alignment() -> bool:
+    """Kill the in-flight alignment worker if any. Returns True if a cancel was requested."""
+    global _cancel_requested, _align_proc
+    with _proc_lock:
+        proc = _align_proc
+        if proc is None or proc.poll() is not None:
+            return False
+        _cancel_requested = True
+        _kill_process_tree(proc)
+        return True
+
 
 def _run_alignment_subprocess(
     reference_path: Path,
@@ -43,6 +92,7 @@ def _run_alignment_subprocess(
     nodata: float,
 ) -> dict[str, Any]:
     """Run registration in a child process so peak RAM is released on exit."""
+    global _align_proc, _cancel_requested
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     script = Path(__file__).with_name("register_thermal.py").resolve()
@@ -71,12 +121,28 @@ def _run_alignment_subprocess(
             str(meta_path),
         ]
         gc.collect()
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(
-                err or f"Alignment subprocess failed (exit {proc.returncode})"
+        with _proc_lock:
+            _cancel_requested = False
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
+            _align_proc = proc
+        try:
+            stdout, stderr = proc.communicate()
+            code = proc.returncode
+        finally:
+            with _proc_lock:
+                cancelled = _cancel_requested
+                _align_proc = None
+                _cancel_requested = False
+        if cancelled:
+            raise AlignmentCancelled("Alignment cancelled")
+        if code != 0:
+            err = (stderr or stdout or "").strip()
+            raise RuntimeError(err or f"Alignment subprocess failed (exit {code})")
         if not meta_path.is_file():
             raise RuntimeError("Alignment subprocess finished but wrote no metadata")
         return json.loads(meta_path.read_text(encoding="utf-8"))

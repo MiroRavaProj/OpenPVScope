@@ -238,19 +238,19 @@ export const fr: Dict = {
       "Copie l'AOI + la grille RGB vers la modalité thermique (mêmes coins/cellules en WGS84). Ajustez ensuite les coins thermiques si nécessaire.",
     confRgb: "Confiance de correspondance RGB",
     confRgbTitle:
-      "Seuil de correspondance RGB (0–1). Plus élevé = boîtes RGB moins nombreuses et plus strictes ; plus bas = plus de détections, y compris des correspondances plus faibles. Par défaut 0,5.",
+      "Seuil de correspondance RGB (0–1). Plus élevé = boîtes RGB moins nombreuses et plus strictes ; plus bas = plus de détections, y compris des correspondances plus faibles. Par défaut 0,65.",
     confThermal: "Confiance de correspondance thermique",
     confThermalTitle:
-      "Seuil de correspondance thermique (0–1). Plus élevé = moins de boîtes thermiques ; plus bas = plus de détections (les scores thermiques sont souvent plus bas que le RGB). Par défaut 0,5.",
+      "Seuil de correspondance thermique (0–1). Plus élevé = moins de boîtes thermiques ; plus bas = plus de détections (les scores thermiques sont souvent plus bas que le RGB). Par défaut 0,65.",
     thermalMatchModeAria: "Mode de correspondance thermique",
     thermalMatchModeTitle:
-      "Comment les modèles thermiques sont appariés. Comparez les modes sur la même grille ; le RGB ne change pas.",
+      "Comment les modèles thermiques sont appariés. Comparez les modes sur la même grille ; le RGB ne change pas. Par défaut : +15 % contexte.",
     thermalMatchModeHint: "Matcher thermique (comparer les modes, puis relancer la détection)",
     thermalMatchDefault: "Par défaut",
     thermalMatchDefaultTitle: "Correspondance classique en niveaux de gris sur la température.",
     thermalMatchContext: "+15 % contexte",
     thermalMatchContextTitle:
-      "Appariement avec des modèles élargis de 15 % de chaque côté, puis boîtes à la taille exacte du panneau.",
+      "Appariement avec des modèles élargis de 15 % de chaque côté, puis boîtes à la taille exacte du panneau. Mode par défaut.",
     thermalMatchGradient: "Gradient",
     thermalMatchGradientTitle:
       "Appariement sur la magnitude des contours Sobel plutôt que les °C bruts.",
@@ -262,12 +262,14 @@ export const fr: Dict = {
     templatesSome: "{{n}} sur {{total}}",
     templatesTitle:
       "Combien de cellules de la grille utiliser comme modèles. 0 = toutes les cellules (le plus lent, meilleure couverture). Plus élevé = plus de variété de modèles quand les panneaux diffèrent ; plus bas = plus rapide, moins de couverture.",
-    tempCap: "Plafond de température thermique °C (par défaut 45)",
+    tempCap: "Plafond de température thermique °C",
     tempCapTitle:
-      "Thermique uniquement : plafonne les températures de l'image de recherche au-dessus de ce °C. Plus élevé = conserve les pixels plus chauds ; plus bas = supprime davantage les valeurs aberrantes chaudes. Par défaut 45 °C.",
+      "Thermique uniquement : plafonne les températures de l'image de recherche au-dessus de ce °C. Par défaut = médiane des températures des pixels dans la grille thermique + 10 °C (recalculé lorsque vous générez ou copiez la grille thermique).",
     advancedValidation: "Validation avancée (affinage)",
     advancedValidationTitle:
-      "Affinage post-NMS : ajustement de grille DBSCAN → élagage des bords → remplissage de Conway. Activé = matrices régulières plus nettes ; désactivé = sortie brute du comparateur uniquement.",
+      "Affinage post-NMS : ajustement de grille DBSCAN → élagage des bords → remplissage de Conway. Activé = matrices régulières plus nettes ; désactivé (par défaut) = sortie brute du comparateur uniquement.",
+    cancel: "Annuler",
+    cancelTitle: "Arrêter la détection en cours",
     fineTune: "Affiner la confiance",
     fineTuneTitle:
       "Affine le seuil de confiance. Plus élevé = ne conserve que les pics forts (élagage plus strict) ; plus bas = conserve plus de détections faibles / hors grille. Par défaut 0,65.",
@@ -303,11 +305,19 @@ export const fr: Dict = {
     margin: "Marge",
     marginTitle:
       "Bordure supplémentaire autour des vignettes d'aperçu redressées. Plus élevé = plus de contexte autour du panneau ; plus bas = recadrage plus serré sur le panneau uniquement.",
-    minIou: "IoU min.",
+    minIou: "IoU min. {{value}}",
     minIouTitle:
-      "IoU minimale du centre pour accepter une paire RGB↔thermique. Plus élevé = correspondances strictes uniquement ; plus bas = conserve des paires plus faibles / éloignées.",
+      "Chevauchement (0–1) requis entre détection RGB et thermique. Glissez pour prévisualiser les paires sur la carte, puis lancez l'extraction. Par défaut 0,75 = chevauchements forts uniquement.",
+    previewHint: "Aperçu des paires : {{count}}. Ajustez l'IoU min., puis extrayez quand les boîtes conviennent.",
+    removeIsolated: "Retirer les isolés",
+    removeIsolatedTitle:
+      "Exclut les panneaux sans voisin à un pas (pitch) gauche/droite/haut/bas. Les retire de la sélection détection et des résultats de segmentation.",
+    isolatedRemoved:
+      "Isolés retirés : RGB {{rgb}}, thermique {{thermal}}, paires extraites {{pairs}}.",
     run: "Lancer l'appariement et l'extraction",
     extracting: "Extraction…",
+    cancel: "Annuler",
+    cancelTitle: "Arrêter la segmentation en cours",
     runTitle: "Apparie les détections RGB et thermiques, puis extrait les vignettes redressées et les statistiques thermiques.",
     saveLabels: "Enregistrer les étiquettes",
     saveLabelsTitle:
@@ -430,6 +440,8 @@ export const fr: Dict = {
     preview: "Aperçu de l'alignement",
     rePreview: "Régénérer l'aperçu de l'alignement",
     previewRunning: "En cours…",
+    cancel: "Annuler",
+    cancelTitle: "Arrêter l'alignement en cours",
     fit: "Ajuster",
     waitingOrtho: "En attente de l'orthophoto…",
     paramMaxRegGsd: "GSD max enregistrement (m)",
@@ -440,6 +452,10 @@ export const fr: Dict = {
     errorBadParams: "Tous les paramètres d'alignement doivent être des nombres positifs.",
     consolePreviewTitle: "Aperçu de l'alignement ortho",
     consolePreviewDetail: "Corrélation de phase + TPS par tuiles métriques — écriture du GeoTIFF aligné…",
+    consoleCancelTitle: "Annulation de l'alignement",
+    consoleCancelDetail: "Arrêt du processus d'alignement…",
+    consoleCancelledTitle: "Alignement annulé",
+    consoleCancelledDetail: "Aperçu arrêté. Ajustez les paramètres et réessayez.",
     consoleSaveTitle: "Enregistrement de l'alignement",
     consoleSaveDetail: "Marquage de l'alignement ortho comme terminé…",
     statusAligned: "Thermique aligné sur le RGB (phase + TPS)",

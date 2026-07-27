@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlignmentParams, AlignmentStatus, api, ProjectPayload } from "./api";
 import { useConsole } from "./ActivityConsole";
 import { useT } from "./i18n";
+import { NumberField } from "./ui/NumberField";
 
 const MIN_SCALE = 0.02;
 const MAX_SCALE = 64;
@@ -427,6 +428,9 @@ export function OrthoAlignmentView(props: {
   const [alignmentDone, setAlignmentDone] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [cacheKey, setCacheKey] = useState<string | number>(() => Date.now());
+  const paramsReady = useRef(false);
+  const saveTimer = useRef<number | null>(null);
+  const cancelRequestedRef = useRef(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -451,6 +455,7 @@ export function OrthoAlignmentView(props: {
       } else {
         setParams({ ...base });
       }
+      paramsReady.current = true;
       if (st.meta) {
         setMeta((m) => ({ ...m, lastMeta: st.meta }));
       }
@@ -458,6 +463,17 @@ export function OrthoAlignmentView(props: {
       /* ignore */
     }
   }, []);
+
+  useEffect(() => {
+    if (!paramsReady.current) return;
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void api.putAlignmentParams(params).catch(() => undefined);
+    }, 300);
+    return () => {
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    };
+  }, [params]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,6 +510,7 @@ export function OrthoAlignmentView(props: {
       return;
     }
     setBusy(true);
+    cancelRequestedRef.current = false;
     noteLocal(t("alignment.consolePreviewTitle"), t("alignment.consolePreviewDetail"));
     try {
       const p = await api.previewAlignment(params);
@@ -503,9 +520,25 @@ export function OrthoAlignmentView(props: {
       props.onApplied(p);
       setShowConfirm(true);
     } catch (e) {
-      props.onError(String(e));
+      const msg = String(e);
+      if (cancelRequestedRef.current || /cancel/i.test(msg)) {
+        noteLocal(t("alignment.consoleCancelledTitle"), t("alignment.consoleCancelledDetail"));
+      } else {
+        props.onError(msg);
+      }
     } finally {
       setBusy(false);
+      cancelRequestedRef.current = false;
+    }
+  }
+
+  async function cancelPreview() {
+    cancelRequestedRef.current = true;
+    noteLocal(t("alignment.consoleCancelTitle"), t("alignment.consoleCancelDetail"));
+    try {
+      await api.cancelAlignment();
+    } catch {
+      /* ignore — preview request will settle */
     }
   }
 
@@ -556,52 +589,47 @@ export function OrthoAlignmentView(props: {
         <div className="align-params">
           <label>
             {t("alignment.paramMaxRegGsd")}
-            <input
-              type="number"
+            <NumberField
               min={0.005}
               step={0.005}
               value={params.max_reg_gsd_m}
-              onChange={(e) => setParam("max_reg_gsd_m", Number(e.target.value))}
+              onChange={(v) => setParam("max_reg_gsd_m", v)}
             />
           </label>
           <label>
             {t("alignment.paramGlobalMax")}
-            <input
-              type="number"
+            <NumberField
               min={0.01}
               step={0.1}
               value={params.global_max_m}
-              onChange={(e) => setParam("global_max_m", Number(e.target.value))}
+              onChange={(v) => setParam("global_max_m", v)}
             />
           </label>
           <label>
             {t("alignment.paramLocalMax")}
-            <input
-              type="number"
+            <NumberField
               min={0.01}
               step={0.05}
               value={params.local_max_m}
-              onChange={(e) => setParam("local_max_m", Number(e.target.value))}
+              onChange={(v) => setParam("local_max_m", v)}
             />
           </label>
           <label>
             {t("alignment.paramTile")}
-            <input
-              type="number"
+            <NumberField
               min={0.01}
               step={0.01}
               value={params.tile_m}
-              onChange={(e) => setParam("tile_m", Number(e.target.value))}
+              onChange={(v) => setParam("tile_m", v)}
             />
           </label>
           <label>
             {t("alignment.paramStride")}
-            <input
-              type="number"
+            <NumberField
               min={0.01}
               step={0.01}
               value={params.stride_m}
-              onChange={(e) => setParam("stride_m", Number(e.target.value))}
+              onChange={(v) => setParam("stride_m", v)}
             />
           </label>
         </div>
@@ -640,6 +668,11 @@ export function OrthoAlignmentView(props: {
                 ? t("alignment.rePreview")
                 : t("alignment.preview")}
           </button>
+          {busy && (
+            <button type="button" onClick={() => void cancelPreview()} title={t("alignment.cancelTitle")}>
+              {t("alignment.cancel")}
+            </button>
+          )}
         </div>
       </div>
 

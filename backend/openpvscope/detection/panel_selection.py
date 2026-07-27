@@ -46,7 +46,8 @@ def write_panels_from_features(
     det_dir = detection_dir(root, modality)
     det_dir.mkdir(parents=True, exist_ok=True)
     fc_all = feature_collection(features_all, name="panels_all")
-    atomic_write_json(panels_all_path(root, modality), fc_all)
+    # Compact JSON — panels_all can be huge; pretty-print made exclude/include slow.
+    atomic_write_json(panels_all_path(root, modality), fc_all, indent=None)
     included = [
         f
         for f in features_all
@@ -55,6 +56,7 @@ def write_panels_from_features(
     atomic_write_json(
         panels_path(root, modality),
         feature_collection(included, name="panels"),
+        indent=None,
     )
     return fate_counts(features_all)
 

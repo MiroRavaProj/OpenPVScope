@@ -45,13 +45,14 @@ LogCb = Callable[[str, str], None]
 Modality = Literal["rgb", "thermal"]
 ThermalMatchMode = Literal["default", "context_15", "gradient"]
 
-# Legacy suite defaults (template_matching_threshold / nms / display filter)
-DEFAULT_CONFIDENCE = 0.5
+# Suite defaults (template_matching_threshold / nms / display filter)
+DEFAULT_CONFIDENCE = 0.65
 DEFAULT_NMS_IOU = 0.05
 DEFAULT_NUM_TEMPLATES = 0  # 0 => all grid cells
-DEFAULT_THERMAL_TEMP_CAP = 45.0  # °C
+DEFAULT_THERMAL_TEMP_CAP = 55.0  # °C
 DEFAULT_DISPLAY_CONFIDENCE = 0.7  # map visualization filter only
-DEFAULT_THERMAL_MATCH_MODE: ThermalMatchMode = "default"
+DEFAULT_THERMAL_MATCH_MODE: ThermalMatchMode = "context_15"
+DEFAULT_ADVANCED_VALIDATION = False
 DEFAULT_MIN_CLUSTER_SIZE = 12
 DEFAULT_DBSCAN_MIN_SAMPLES = 4
 DEFAULT_WALK_TOL_FRAC = 0.10
@@ -145,8 +146,20 @@ def generate_grid(
     fc = feature_collection(features, name="grid")
     out = det_dir / "grid.geojson"
     atomic_write_json(out, fc)
-    atomic_write_json(det_dir / "grid_meta.json", {"rows": rows, "cols": cols, "cell_count": len(cells)})
-    return {"rows": rows, "cols": cols, "cell_count": len(cells), "path": str(out), "modality": modality}
+    meta: dict[str, Any] = {"rows": rows, "cols": cols, "cell_count": len(cells)}
+    atomic_write_json(det_dir / "grid_meta.json", meta)
+    result: dict[str, Any] = {
+        "rows": rows,
+        "cols": cols,
+        "cell_count": len(cells),
+        "path": str(out),
+        "modality": modality,
+    }
+    if modality == "thermal":
+        cap = apply_suggested_thermal_temp_cap(root)
+        if cap is not None:
+            result["suggested_thermal_temp_cap"] = cap
+    return result
 
 
 def copy_rgb_grid_to_thermal(root: Path) -> dict[str, Any]:
@@ -167,7 +180,114 @@ def copy_rgb_grid_to_thermal(root: Path) -> dict[str, Any]:
             props = feat.setdefault("properties", {})
             props["modality"] = "thermal"
         atomic_write_json(dst / name, data)
-    return {"ok": True, "copied": needed}
+    result: dict[str, Any] = {"ok": True, "copied": needed}
+    cap = apply_suggested_thermal_temp_cap(root)
+    if cap is not None:
+        result["suggested_thermal_temp_cap"] = cap
+    return result
+
+
+def suggest_thermal_temp_cap(root: Path, *, margin_c: float = 10.0) -> float | None:
+    """Median °C of thermal pixels inside the thermal AOI/grid, plus margin_c."""
+    root = Path(root)
+    det_dir = detection_dir(root, "thermal")
+    aoi = _read_json(det_dir / "aoi_ring.json")
+    if not aoi or not aoi.get("ring"):
+        return None
+    try:
+        ortho = _ortho_for(root, "thermal")
+    except FileNotFoundError:
+        return None
+
+    ring_ll = [[float(p[0]), float(p[1])] for p in aoi["ring"][:4]]
+    if len(ring_ll) != 4:
+        return None
+
+    try:
+        from rasterio.features import geometry_mask
+        from rasterio.windows import Window, from_bounds
+    except Exception:
+        return None
+
+    with rasterio.open(ortho) as ds:
+        from_wgs = None
+        try:
+            if ds.crs is not None and "4326" not in str(ds.crs).replace(" ", ""):
+                from_wgs = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
+        except Exception:
+            from_wgs = None
+
+        coords = [_lonlat_to_xy(lon, lat, from_wgs) for lon, lat in ring_ll]
+        if coords[0] != coords[-1]:
+            coords = [*coords, coords[0]]
+        xs = [c[0] for c in coords]
+        ys = [c[1] for c in coords]
+        left, right = min(xs), max(xs)
+        bottom, top = min(ys), max(ys)
+        try:
+            window = from_bounds(left, bottom, right, top, transform=ds.transform)
+            window = window.intersection(Window(0, 0, ds.width, ds.height))
+            window = window.round_offsets().round_lengths()
+        except Exception:
+            return None
+        if window.width < 1 or window.height < 1:
+            return None
+
+        band = ds.read(1, window=window).astype(np.float32)
+        win_transform = ds.window_transform(window)
+        geom = {"type": "Polygon", "coordinates": [coords]}
+        inside = geometry_mask(
+            [geom],
+            out_shape=band.shape,
+            transform=win_transform,
+            invert=True,
+            all_touched=True,
+        )
+        valid = inside & np.isfinite(band) & (band > -100.0)
+        if not np.any(valid):
+            return None
+        median = float(np.median(band[valid]))
+        if not math.isfinite(median):
+            return None
+        cap = median + float(margin_c)
+        return float(max(10.0, min(70.0, round(cap, 1))))
+
+
+def apply_suggested_thermal_temp_cap(root: Path) -> float | None:
+    """Compute median+10°C, persist into detection params + thermal grid_meta."""
+    root = Path(root)
+    cap = suggest_thermal_temp_cap(root)
+    if cap is None:
+        return None
+    median = round(cap - 10.0, 1)
+    det_dir = detection_dir(root, "thermal")
+    meta = _read_json(det_dir / "grid_meta.json") or {}
+    meta["median_temp_c"] = median
+    meta["suggested_temp_cap"] = cap
+    atomic_write_json(det_dir / "grid_meta.json", meta)
+
+    from openpvscope.detection.prefs import load_detection_params, save_detection_params
+
+    params = load_detection_params(root)
+    params["thermal_temp_cap"] = cap
+    save_detection_params(root, params)
+    return cap
+
+
+def ensure_thermal_temp_cap_suggestion(root: Path) -> float | None:
+    """Return cached suggestion, or compute once if a thermal grid exists."""
+    root = Path(root)
+    det_dir = detection_dir(root, "thermal")
+    if not (det_dir / "grid.geojson").is_file():
+        return None
+    meta = _read_json(det_dir / "grid_meta.json") or {}
+    cached = meta.get("suggested_temp_cap")
+    if cached is not None:
+        try:
+            return float(cached)
+        except (TypeError, ValueError):
+            pass
+    return apply_suggested_thermal_temp_cap(root)
 
 
 def _lonlat_to_xy(lon: float, lat: float, transformer_from_wgs84) -> tuple[float, float]:
@@ -224,7 +344,7 @@ def run_detection(
     nms_iou: float = DEFAULT_NMS_IOU,
     num_templates: int = DEFAULT_NUM_TEMPLATES,
     thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
-    advanced_validation: bool = True,
+    advanced_validation: bool = DEFAULT_ADVANCED_VALIDATION,
     fine_tuning_confidence: float = DEFAULT_FINE_TUNING_CONFIDENCE,
     thermal_match_mode: ThermalMatchMode = DEFAULT_THERMAL_MATCH_MODE,
     keep_high_conf_outliers: bool = False,
@@ -640,7 +760,9 @@ def detection_status(project_root: Path) -> dict[str, Any]:
             "fill_confidence": DEFAULT_FILL_CONFIDENCE,
             "fine_tuning_confidence": DEFAULT_FINE_TUNING_CONFIDENCE,
             "keep_high_conf_outliers": False,
-            "advanced_validation": True,
+            "advanced_validation": DEFAULT_ADVANCED_VALIDATION,
+            "confidence_rgb": DEFAULT_CONFIDENCE,
+            "confidence_thermal": DEFAULT_CONFIDENCE,
         },
     }
 

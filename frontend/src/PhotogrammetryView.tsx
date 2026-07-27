@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { useConsole } from "./ActivityConsole";
 import { useT } from "./i18n";
+import { NumberField } from "./ui/NumberField";
 
 type EngineInfo = {
   odx: OdxInfo | null;
@@ -177,6 +178,18 @@ export function PhotogrammetryView(props: {
     setDraftMode(s.mode);
     setOdxOpts({ ...DEFAULT_ODX, ...s.odx });
     setProducts({ ...DEFAULT_PRODUCTS, ...s.products, ortho: true });
+    if (s.thermal) {
+      const next = { ...DEFAULT_THERMAL, ...s.thermal };
+      setThermal((prev) =>
+        prev.emissivity === next.emissivity &&
+        prev.distance === next.distance &&
+        prev.humidity === next.humidity &&
+        prev.reflection === next.reflection &&
+        prev.parametric_fallback === next.parametric_fallback
+          ? prev
+          : next,
+      );
+    }
     setWizardStep(s.wizard_complete ? null : 1);
   }, []);
 
@@ -328,6 +341,7 @@ export function PhotogrammetryView(props: {
       mode: patch.mode ?? setup?.mode ?? draftMode,
       odx: patch.odx ?? odxOpts,
       products: { ...products, ...(patch.products ?? {}), ortho: true },
+      thermal: patch.thermal ?? thermal,
     };
     const saved = await api.putPhotoSetup(body);
     applySetup(saved);
@@ -399,11 +413,20 @@ export function PhotogrammetryView(props: {
     }
   }
 
+  useEffect(() => {
+    if (!setup?.wizard_complete) return;
+    const timer = window.setTimeout(() => {
+      void persistSetup({ thermal }).catch(() => undefined);
+    }, 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thermal, setup?.wizard_complete]);
+
   async function runOne(modality: PhotoModality) {
     props.setBusy(true);
     props.onError(null);
     try {
-      await persistSetup({ odx: odxOpts, products });
+      await persistSetup({ odx: odxOpts, products, thermal });
     } catch {
       /* non-fatal */
     }
@@ -423,7 +446,7 @@ export function PhotogrammetryView(props: {
     props.setBusy(true);
     props.onError(null);
     try {
-      await persistSetup({ odx: odxOpts, products });
+      await persistSetup({ odx: odxOpts, products, thermal });
     } catch {
       /* non-fatal */
     }
@@ -703,19 +726,13 @@ export function PhotogrammetryView(props: {
             <div className="tool-grid2">
               <label className="tool-field" title={t("photo.odxOpts.resolutionTitle")}>
                 {t("photo.odxOpts.resolution")}
-                <input
-                  type="number"
+                <NumberField
                   min={0.1}
                   max={100}
                   step={0.1}
                   value={odxOpts.orthophoto_resolution}
                   disabled={props.busy}
-                  onChange={(e) =>
-                    setOdxOpts((p) => ({
-                      ...p,
-                      orthophoto_resolution: Number(e.target.value) || 2,
-                    }))
-                  }
+                  onChange={(v) => setOdxOpts((p) => ({ ...p, orthophoto_resolution: v }))}
                 />
               </label>
               <label className="tool-field" title={t("photo.odxOpts.featureTitle")}>
@@ -758,16 +775,13 @@ export function PhotogrammetryView(props: {
               </label>
               <label className="tool-field" title={t("photo.odxOpts.cropTitle")}>
                 {t("photo.odxOpts.crop")}
-                <input
-                  type="number"
+                <NumberField
                   min={0}
                   max={100}
                   step={0.1}
                   value={odxOpts.crop}
                   disabled={props.busy}
-                  onChange={(e) =>
-                    setOdxOpts((p) => ({ ...p, crop: Number(e.target.value) || 0 }))
-                  }
+                  onChange={(v) => setOdxOpts((p) => ({ ...p, crop: v }))}
                 />
               </label>
             </div>
@@ -825,55 +839,43 @@ export function PhotogrammetryView(props: {
             <div className="tool-grid2">
               <label className="tool-field" title={t("photo.emissivityTitle")}>
                 {t("photo.emissivity")}
-                <input
-                  type="number"
+                <NumberField
                   min={0}
                   max={1}
                   step={0.01}
-                  value={thermal.emissivity}
+                  value={thermal.emissivity ?? 0}
                   disabled={props.busy}
-                  onChange={(e) =>
-                    setThermal((p) => ({ ...p, emissivity: Number(e.target.value) || 0 }))
-                  }
+                  onChange={(v) => setThermal((p) => ({ ...p, emissivity: v }))}
                 />
               </label>
               <label className="tool-field" title={t("photo.distanceTitle")}>
                 {t("photo.distance")}
-                <input
-                  type="number"
+                <NumberField
                   min={0}
                   step={0.1}
-                  value={thermal.distance}
+                  value={thermal.distance ?? 0}
                   disabled={props.busy}
-                  onChange={(e) =>
-                    setThermal((p) => ({ ...p, distance: Number(e.target.value) || 0 }))
-                  }
+                  onChange={(v) => setThermal((p) => ({ ...p, distance: v }))}
                 />
               </label>
               <label className="tool-field" title={t("photo.humidityTitle")}>
                 {t("photo.humidity")}
-                <input
-                  type="number"
+                <NumberField
                   min={0}
                   max={100}
                   step={1}
-                  value={thermal.humidity}
+                  value={thermal.humidity ?? 0}
                   disabled={props.busy}
-                  onChange={(e) =>
-                    setThermal((p) => ({ ...p, humidity: Number(e.target.value) || 0 }))
-                  }
+                  onChange={(v) => setThermal((p) => ({ ...p, humidity: v }))}
                 />
               </label>
               <label className="tool-field" title={t("photo.reflectionTitle")}>
                 {t("photo.reflection")}
-                <input
-                  type="number"
+                <NumberField
                   step={0.1}
-                  value={thermal.reflection}
+                  value={thermal.reflection ?? 0}
                   disabled={props.busy}
-                  onChange={(e) =>
-                    setThermal((p) => ({ ...p, reflection: Number(e.target.value) || 0 }))
-                  }
+                  onChange={(v) => setThermal((p) => ({ ...p, reflection: v }))}
                 />
               </label>
             </div>

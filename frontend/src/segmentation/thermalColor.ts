@@ -106,14 +106,12 @@ export function colorizePairsGeojson(
     features: (fc.features || []).map((f) => {
       const props = { ...(f.properties || {}) };
       const val = props[opts.indicator];
-      const fill = opts.thermalColoring
-        ? getThermalColorForValue(
-            typeof val === "number" ? val : null,
-            globalMin,
-            globalMax,
-            opts.colorRange,
-          )
-        : iouFallbackColor(props.iou as number | undefined);
+      const hasThermal = typeof val === "number" && Number.isFinite(val);
+      // Preview pairs (pre-extract) have IoU only — color by overlap until stats exist.
+      const fill =
+        opts.thermalColoring && hasThermal
+          ? getThermalColorForValue(val, globalMin, globalMax, opts.colorRange)
+          : iouFallbackColor(props.iou as number | undefined);
       props.fill_color = fill;
       return {
         ...f,

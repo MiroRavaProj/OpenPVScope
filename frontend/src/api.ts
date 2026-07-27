@@ -239,6 +239,40 @@ export interface PhotoSetup {
   mode: PhotoMode;
   odx: OdxOptions;
   products: PhotoProducts;
+  thermal?: PhotoThermalParams;
+}
+
+export interface DetectionParams {
+  rows: number;
+  cols: number;
+  confidence_rgb: number;
+  confidence_thermal: number;
+  nms_iou: number;
+  num_templates: number;
+  thermal_temp_cap: number;
+  advanced_validation: boolean;
+  fine_tuning_confidence: number;
+  thermal_match_mode: "default" | "context_15" | "gradient";
+  keep_high_conf_outliers: boolean;
+  min_cluster_size: number;
+  dbscan_min_samples: number;
+  walk_tol_frac: number;
+  pitch_slack: number;
+  fill_confidence: number;
+}
+
+export interface SegmentationParams {
+  margin_factor: number;
+  min_iou: number;
+  search_radius_m: number | null;
+}
+
+export interface JobStatus {
+  running: boolean;
+  cancelable?: boolean;
+  cancelled?: boolean;
+  error: string | null;
+  result: unknown;
 }
 
 export interface PhotoRunBody extends PhotoThermalParams {
@@ -482,6 +516,17 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify(params ?? {}),
     }),
+  cancelAlignment: () =>
+    req<{ cancelled: boolean }>("/api/alignment/cancel", { method: "POST" }),
+  putAlignmentParams: (params: Partial<AlignmentParams>) =>
+    req<{ ok: boolean; params: AlignmentParams; defaults: AlignmentParams }>(
+      "/api/alignment/params",
+      {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(params),
+      },
+    ),
   detection: () => req<{ message: string }>("/api/detection/status"),
   detectionStatus: () =>
     req<{
@@ -495,8 +540,22 @@ export const api = {
       rgb?: { has_aoi: boolean; has_grid: boolean; has_panels: boolean; panel_count: number };
       thermal?: { has_aoi: boolean; has_grid: boolean; has_panels: boolean; panel_count: number };
       both_grids_ready?: boolean;
-      job?: { running: boolean; error: string | null; result: unknown };
+      job?: JobStatus;
+      params?: DetectionParams;
+      defaults?: DetectionParams;
+      suggested_thermal_temp_cap?: number;
     }>("/api/detection/status"),
+  putDetectionParams: (params: Partial<DetectionParams>) =>
+    req<{ ok: boolean; params: DetectionParams; defaults: DetectionParams }>(
+      "/api/detection/params",
+      {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(params),
+      },
+    ),
+  cancelDetection: () =>
+    req<{ cancelled: boolean }>("/api/detection/cancel", { method: "POST" }),
   putAoi: (
     ring: number[][],
     opts?: { modality?: "rgb" | "thermal"; regenerate_grid?: boolean },
@@ -511,16 +570,24 @@ export const api = {
       }),
     }),
   generateGrid: (rows: number, cols: number, modality: "rgb" | "thermal" = "rgb") =>
-    req<{ rows: number; cols: number; cell_count: number; geojson: GeoJsonFc }>("/api/detection/grid", {
+    req<{
+      rows: number;
+      cols: number;
+      cell_count: number;
+      geojson: GeoJsonFc;
+      suggested_thermal_temp_cap?: number;
+    }>("/api/detection/grid", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ rows, cols, modality }),
     }),
   copyGridToThermal: () =>
-    req<{ ok: boolean; thermal_aoi?: GeoJsonFc; thermal_grid?: GeoJsonFc }>(
-      "/api/detection/grid/copy-to-thermal",
-      { method: "POST" },
-    ),
+    req<{
+      ok: boolean;
+      thermal_aoi?: GeoJsonFc;
+      thermal_grid?: GeoJsonFc;
+      suggested_thermal_temp_cap?: number;
+    }>("/api/detection/grid/copy-to-thermal", { method: "POST" }),
   runDetection: (opts: {
     confidence_rgb: number;
     confidence_thermal: number;
@@ -546,11 +613,11 @@ export const api = {
         confidence_thermal: opts.confidence_thermal,
         nms_iou: opts.nms_iou,
         num_templates: opts.num_templates ?? 0,
-        thermal_temp_cap: opts.thermal_temp_cap ?? 45,
+        thermal_temp_cap: opts.thermal_temp_cap ?? 55,
         modality: opts.modality ?? "both",
-        advanced_validation: opts.advanced_validation ?? true,
+        advanced_validation: opts.advanced_validation ?? false,
         fine_tuning_confidence: opts.fine_tuning_confidence ?? 0.65,
-        thermal_match_mode: opts.thermal_match_mode ?? "default",
+        thermal_match_mode: opts.thermal_match_mode ?? "context_15",
         keep_high_conf_outliers: opts.keep_high_conf_outliers ?? false,
         min_cluster_size: opts.min_cluster_size ?? 12,
         dbscan_min_samples: opts.dbscan_min_samples ?? 4,
@@ -559,8 +626,7 @@ export const api = {
         fill_confidence: opts.fill_confidence ?? 0.5,
       }),
     }),
-  detectionJob: () =>
-    req<{ running: boolean; error: string | null; result: unknown }>("/api/detection/job"),
+  detectionJob: () => req<JobStatus>("/api/detection/job"),
   detectionGeojson: (
     name: "aoi" | "grid" | "panels" | "panels_all",
     modality: "rgb" | "thermal" = "rgb",
@@ -600,8 +666,21 @@ export const api = {
       ready: boolean;
       has_pairs: boolean;
       pair_count: number;
-      job?: { running: boolean; error: string | null; result: unknown };
+      job?: JobStatus;
+      params?: SegmentationParams;
+      defaults?: SegmentationParams;
     }>("/api/segmentation/status"),
+  putSegmentationParams: (params: Partial<SegmentationParams>) =>
+    req<{ ok: boolean; params: SegmentationParams; defaults: SegmentationParams }>(
+      "/api/segmentation/params",
+      {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(params),
+      },
+    ),
+  cancelSegmentation: () =>
+    req<{ cancelled: boolean }>("/api/segmentation/cancel", { method: "POST" }),
   runSegmentation: (opts?: {
     margin_factor?: number;
     search_radius_m?: number | null;
@@ -613,13 +692,31 @@ export const api = {
       body: JSON.stringify({
         margin_factor: opts?.margin_factor ?? 0.2,
         search_radius_m: opts?.search_radius_m ?? null,
-        min_iou: opts?.min_iou ?? 0.1,
+        min_iou: opts?.min_iou ?? 0.75,
       }),
     }),
-  segmentationJob: () =>
-    req<{ running: boolean; error: string | null; result: unknown }>("/api/segmentation/job"),
+  segmentationJob: () => req<JobStatus>("/api/segmentation/job"),
   segmentationPairs: () => req<{ pairs: unknown[]; count: number }>("/api/segmentation/pairs"),
   segmentationPairsGeojson: () => req<GeoJsonFc>("/api/segmentation/pairs.geojson"),
+  /** Full greedy RGB↔thermal candidates (min_iou=0). Filter IoU on the client. */
+  segmentationPairPreview: (opts?: { search_radius_m?: number | null }) => {
+    const q = new URLSearchParams();
+    q.set("min_iou", "0");
+    if (opts?.search_radius_m != null) q.set("search_radius_m", String(opts.search_radius_m));
+    const qs = q.toString();
+    return req<GeoJsonFc & { count?: number; min_iou?: number }>(
+      `/api/segmentation/pair-preview.geojson?${qs}`,
+    );
+  },
+  removeIsolatedPanels: () =>
+    req<{
+      ok: boolean;
+      removed_rgb: number;
+      removed_thermal: number;
+      removed_pairs: number;
+      rgb_ids: string[];
+      thermal_ids: string[];
+    }>("/api/segmentation/remove-isolated", { method: "POST" }),
   segmentationPanelMeta: (id: string) =>
     req<Record<string, unknown>>(`/api/segmentation/panel/${id}/meta`),
   segmentationPreviewUrl: (id: string, kind: "rgb" | "thermal") =>

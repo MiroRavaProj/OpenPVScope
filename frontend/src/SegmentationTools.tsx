@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, GeoJsonFc } from "./api";
 import { useT } from "./i18n";
+
+const PARAM_SAVE_MS = 300;
 import { ThermalDistributionPlot } from "./segmentation/ThermalDistributionPlot";
 import {
   collectIndicatorValues,
@@ -10,6 +12,7 @@ import {
   THERMAL_INDICATORS,
   ThermalIndicator,
 } from "./segmentation/thermalColor";
+import { NumberField } from "./ui/NumberField";
 import { useMinimized } from "./ui/useMinimized";
 
 const INDICATOR_KEY: Record<ThermalIndicator, string> = {
@@ -47,18 +50,62 @@ export function SegmentationTools(props: {
   const t = useT();
   const [status, setStatus] = useState("");
   const [count, setCount] = useState(0);
+  const [previewCount, setPreviewCount] = useState(0);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [margin, setMargin] = useState(0.2);
-  const [minIou, setMinIou] = useState(0.1);
+  const [minIou, setMinIou] = useState(0.75);
   const [labelMsg, setLabelMsg] = useState<string | null>(null);
   const [controlsMin, setControlsMin] = useMinimized("seg-controls", false);
   const [histMin, setHistMin] = useMinimized("seg-histogram", false);
+  const paramsReady = useRef(false);
+  const saveTimer = useRef<number | null>(null);
+  /** Full greedy candidate pairs (min_iou=0) — filter locally; never re-pair on slider move. */
+  const allCandidatesRef = useRef<GeoJsonFc | null>(null);
+  /** User moved Min IoU — show filtered candidates instead of last extract. */
+  const iouTouched = useRef(false);
+  /** True after extract finishes — histogram/labels use real thermal stats. */
+  const [extracted, setExtracted] = useState(false);
 
   const values = useMemo(() => {
-    if (!colorState.pairsFc) return [];
+    if (!colorState.pairsFc || !extracted) return [];
     return collectIndicatorValues(colorState.pairsFc.features || [], colorState.indicator);
-  }, [colorState.pairsFc, colorState.indicator]);
+  }, [colorState.pairsFc, colorState.indicator, extracted]);
+
+  const applyIouFilter = useCallback(
+    (iou: number, all?: GeoJsonFc | null) => {
+      const src = all ?? allCandidatesRef.current;
+      if (!src) return;
+      const features = (src.features || []).filter((f) => {
+        const v = f.properties?.iou;
+        return typeof v === "number" ? v >= iou : true;
+      });
+      setPreviewCount(features.length);
+      setExtracted(false);
+      onColorStateChange({
+        pairsFc: { type: "FeatureCollection", features },
+        colorRange: null,
+      });
+    },
+    [onColorStateChange],
+  );
+
+  const minIouRef = useRef(minIou);
+  minIouRef.current = minIou;
+
+  const loadCandidates = useCallback(async () => {
+    if (thermalOnly) return;
+    try {
+      const fc = await api.segmentationPairPreview();
+      allCandidatesRef.current = fc;
+      applyIouFilter(minIouRef.current, fc);
+    } catch (e) {
+      allCandidatesRef.current = null;
+      setPreviewCount(0);
+      onColorStateChange({ pairsFc: { type: "FeatureCollection", features: [] }, colorRange: null });
+      onError(String(e));
+    }
+  }, [thermalOnly, applyIouFilter, onColorStateChange, onError]);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,21 +113,49 @@ export function SegmentationTools(props: {
       setStatus(st.message);
       setCount(st.pair_count);
       setRunning(Boolean(st.job?.running));
-      if (st.pair_count > 0) {
+      if (!paramsReady.current && st.params) {
+        setMargin(st.params.margin_factor);
+        setMinIou(st.params.min_iou);
+        paramsReady.current = true;
+      }
+      if (st.pair_count > 0 && !iouTouched.current) {
         const fc = await api.segmentationPairsGeojson();
         const vals = collectIndicatorValues(fc.features || [], colorState.indicator);
         const range = colorState.colorRange ?? percentileRange(vals);
+        setExtracted(true);
+        setPreviewCount(st.pair_count);
         onColorStateChange({ pairsFc: fc, colorRange: range });
+        // Warm candidate cache in background for when the user moves IoU.
+        if (!thermalOnly) {
+          void api.segmentationPairPreview().then((c) => {
+            allCandidatesRef.current = c;
+          });
+        }
+      } else if (!thermalOnly) {
+        await loadCandidates();
       }
     } catch (e) {
       onError(String(e));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onError, onColorStateChange]);
+  }, [onError, onColorStateChange, loadCandidates, thermalOnly]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!paramsReady.current) return;
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void api
+        .putSegmentationParams({ margin_factor: margin, min_iou: minIou })
+        .catch(() => undefined);
+    }, PARAM_SAVE_MS);
+    return () => {
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    };
+  }, [margin, minIou]);
 
   useEffect(() => {
     if (!running) return;
@@ -93,7 +168,7 @@ export function SegmentationTools(props: {
         if (cancelled) return;
         if (!job.running) {
           setRunning(false);
-          if (job.error) onError(String(job.error));
+          if (job.error && !job.cancelled) onError(String(job.error));
           await refresh();
           onRefreshMap();
           onProjectRefresh();
@@ -111,6 +186,40 @@ export function SegmentationTools(props: {
       if (timer != null) window.clearTimeout(timer);
     };
   }, [running, refresh, onRefreshMap, onProjectRefresh, onError]);
+
+  async function cancelRun() {
+    try {
+      await api.cancelSegmentation();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+
+  async function removeIsolated() {
+    setBusy(true);
+    setLabelMsg(null);
+    try {
+      const r = await api.removeIsolatedPanels();
+      iouTouched.current = true;
+      await loadCandidates();
+      if (thermalOnly) {
+        await refresh();
+      }
+      onRefreshMap();
+      onProjectRefresh();
+      setLabelMsg(
+        t("segmentation.isolatedRemoved", {
+          rgb: r.removed_rgb,
+          thermal: r.removed_thermal,
+          pairs: r.removed_pairs,
+        }),
+      );
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function setIndicator(ind: ThermalIndicator) {
     const vals = colorState.pairsFc
@@ -166,12 +275,13 @@ export function SegmentationTools(props: {
   }
 
   const canLabel =
+    extracted &&
     colorState.thermalColoring &&
     LABELABLE_INDICATORS.includes(colorState.indicator) &&
     colorState.colorRange != null &&
     count > 0;
 
-  const hasPairs = count > 0 && colorState.colorRange != null;
+  const hasPairs = extracted && count > 0 && colorState.colorRange != null;
 
   return (
     <>
@@ -190,40 +300,43 @@ export function SegmentationTools(props: {
         {!controlsMin && (
           <div className="seg-dock-section-body">
             <p className="muted tool-hint">{status}</p>
-            <div className={`seg-dock-row${thermalOnly ? "" : " seg-dock-row-2"}`}>
+            <div className="seg-dock-row">
               <label
                 className="tool-field"
                 title={t("segmentation.marginTitle")}
               >
                 {t("segmentation.margin")}
-                <input
-                  type="number"
+                <NumberField
                   min={0}
                   max={1}
                   step={0.05}
                   value={margin}
                   disabled={busy || running}
-                  onChange={(e) => setMargin(Number(e.target.value))}
+                  onChange={setMargin}
                 />
               </label>
-              {!thermalOnly && (
-              <label
-                className="tool-field"
-                title={t("segmentation.minIouTitle")}
-              >
-                {t("segmentation.minIou")}
+            </div>
+            {!thermalOnly && (
+              <label className="tool-field" title={t("segmentation.minIouTitle")}>
+                {t("segmentation.minIou", { value: minIou.toFixed(2) })}
                 <input
-                  type="number"
+                  type="range"
                   min={0}
-                  max={1}
-                  step={0.05}
+                  max={0.99}
+                  step={0.01}
                   value={minIou}
                   disabled={busy || running}
-                  onChange={(e) => setMinIou(Number(e.target.value))}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    iouTouched.current = true;
+                    setMinIou(v);
+                    // Instant local filter — pairing already cached at min_iou=0.
+                    if (allCandidatesRef.current) applyIouFilter(v);
+                    else void loadCandidates();
+                  }}
                 />
               </label>
-              )}
-            </div>
+            )}
             <div className="seg-dock-actions">
               <button
                 type="button"
@@ -238,6 +351,23 @@ export function SegmentationTools(props: {
                     ? t("segmentation.runThermal")
                     : t("segmentation.run")}
               </button>
+              {running && (
+                <button
+                  type="button"
+                  onClick={() => void cancelRun()}
+                  title={t("segmentation.cancelTitle")}
+                >
+                  {t("segmentation.cancel")}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={busy || running}
+                title={t("segmentation.removeIsolatedTitle")}
+                onClick={() => void removeIsolated()}
+              >
+                {t("segmentation.removeIsolated")}
+              </button>
               <button
                 type="button"
                 disabled={busy || !canLabel}
@@ -251,7 +381,9 @@ export function SegmentationTools(props: {
             <p className="muted tool-hint">
               {thermalOnly
                 ? t("segmentation.panelsHint", { count })
-                : t("segmentation.pairsHint", { count })}
+                : extracted
+                  ? t("segmentation.pairsHint", { count })
+                  : t("segmentation.previewHint", { count: previewCount })}
             </p>
           </div>
         )}

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import traceback
 import threading
-from pathlib import Path
 from typing import Any, Literal
 
 from openpvscope.console import get_console
 from openpvscope.detection.pipeline import (
+    DEFAULT_ADVANCED_VALIDATION,
     DEFAULT_CONFIDENCE,
     DEFAULT_FILL_CONFIDENCE,
     DEFAULT_FINE_TUNING_CONFIDENCE,
@@ -30,14 +30,33 @@ from openpvscope.workflow import mark_step
 
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
-_state: dict[str, Any] = {"running": False, "error": None, "result": None}
+_cancel = threading.Event()
+_state: dict[str, Any] = {
+    "running": False,
+    "cancelable": False,
+    "cancelled": False,
+    "error": None,
+    "result": None,
+}
 
 RunModality = Literal["rgb", "thermal", "both"]
+
+
+class JobCancelled(Exception):
+    """Raised when the user requests detection cancel."""
 
 
 def detection_job_status() -> dict[str, Any]:
     with _lock:
         return dict(_state)
+
+
+def request_cancel_detection() -> bool:
+    with _lock:
+        if not _state.get("running"):
+            return False
+        _cancel.set()
+        return True
 
 
 def start_detection_job(
@@ -49,7 +68,7 @@ def start_detection_job(
     nms_iou: float = DEFAULT_NMS_IOU,
     num_templates: int = DEFAULT_NUM_TEMPLATES,
     thermal_temp_cap: float | None = DEFAULT_THERMAL_TEMP_CAP,
-    advanced_validation: bool = True,
+    advanced_validation: bool = DEFAULT_ADVANCED_VALIDATION,
     fine_tuning_confidence: float = DEFAULT_FINE_TUNING_CONFIDENCE,
     thermal_match_mode: ThermalMatchMode = DEFAULT_THERMAL_MATCH_MODE,
     keep_high_conf_outliers: bool = False,
@@ -63,7 +82,16 @@ def start_detection_job(
     with _lock:
         if _state.get("running"):
             raise RuntimeError("Detection already running")
-        _state.update({"running": True, "error": None, "result": None})
+        _cancel.clear()
+        _state.update(
+            {
+                "running": True,
+                "cancelable": True,
+                "cancelled": False,
+                "error": None,
+                "result": None,
+            }
+        )
 
     console = get_console()
     root = store.root
@@ -93,6 +121,8 @@ def start_detection_job(
         try:
             n = len(mods)
             for i, mod in enumerate(mods):
+                if _cancel.is_set():
+                    raise JobCancelled("Detection cancelled")
                 base = (i / n) * 100.0
                 span = 100.0 / n
                 conf = confidence_thermal if mod == "thermal" else confidence_rgb
@@ -106,6 +136,8 @@ def start_detection_job(
                     _span=span,
                     _mod=mod,
                 ) -> None:
+                    if _cancel.is_set():
+                        raise JobCancelled("Detection cancelled")
                     mapped = None if p is None else _base + (p / 100.0) * _span
                     lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
                     console.set_progress(
@@ -162,15 +194,37 @@ def start_detection_job(
                 _state.update(
                     {
                         "running": False,
+                        "cancelable": False,
+                        "cancelled": False,
                         "result": {"modalities": totals, "count": total_count},
                         "error": None,
                     }
                 )
             console.end_job(ok=True, message=f"Detected {total_count} panels ({label})")
+        except JobCancelled:
+            with _lock:
+                _state.update(
+                    {
+                        "running": False,
+                        "cancelable": False,
+                        "cancelled": True,
+                        "error": None,
+                        "result": None,
+                    }
+                )
+            console.end_job(ok=False, message="Cancelled")
         except Exception as e:
             console.log(traceback.format_exc(), level="verbose", step="detection")
             with _lock:
-                _state.update({"running": False, "error": str(e), "result": None})
+                _state.update(
+                    {
+                        "running": False,
+                        "cancelable": False,
+                        "cancelled": False,
+                        "error": str(e),
+                        "result": None,
+                    }
+                )
             console.end_job(ok=False, message=str(e))
 
     _thread = threading.Thread(target=work, daemon=True)

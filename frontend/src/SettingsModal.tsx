@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, AppSettings } from "./api";
 import { APP_LANGUAGES, AppLanguage, isAppLanguage, useI18n, useT } from "./i18n";
+import { NumberField } from "./ui/NumberField";
 
 type Props = {
   open: boolean;
@@ -136,14 +137,12 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
 
           <label className="settings-field" title={t("settings.historyLengthTitle")}>
             <span>{t("settings.historyLength")}</span>
-            <input
-              type="number"
+            <NumberField
               min={1}
               max={200}
+              step={1}
               value={settings.history_max_steps}
-              onChange={(e) =>
-                setSettings({ ...settings, history_max_steps: Number(e.target.value) || 1 })
-              }
+              onChange={(v) => setSettings({ ...settings, history_max_steps: v })}
             />
             <span className="muted">{t("settings.historyLengthHint")}</span>
           </label>
@@ -191,14 +190,12 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
 
           <label className="settings-field" title={t("settings.recentMaxTitle")}>
             <span>{t("settings.recentMax")}</span>
-            <input
-              type="number"
+            <NumberField
               min={0}
               max={50}
+              step={1}
               value={settings.recent_max}
-              onChange={(e) =>
-                setSettings({ ...settings, recent_max: Number(e.target.value) || 0 })
-              }
+              onChange={(v) => setSettings({ ...settings, recent_max: v })}
             />
           </label>
 

@@ -238,19 +238,19 @@ export const de: Dict = {
       "Kopiert die RGB-AOI + das Raster in die Thermal-Modalität (gleiche Ecken/Zellen in WGS84). Passe anschließend bei Bedarf die Thermal-Ecken an.",
     confRgb: "RGB-Übereinstimmungskonfidenz",
     confRgbTitle:
-      "RGB-Übereinstimmungsschwelle (0–1). Höher = weniger, strengere RGB-Boxen; niedriger = mehr Erkennungen einschließlich schwächerer Treffer. Standard 0,5.",
+      "RGB-Übereinstimmungsschwelle (0–1). Höher = weniger, strengere RGB-Boxen; niedriger = mehr Erkennungen einschließlich schwächerer Treffer. Standard 0,65.",
     confThermal: "Thermal-Übereinstimmungskonfidenz",
     confThermalTitle:
-      "Thermal-Übereinstimmungsschwelle (0–1). Höher = weniger Thermal-Boxen; niedriger = mehr Erkennungen (Thermal-Werte liegen oft niedriger als RGB). Standard 0,5.",
+      "Thermal-Übereinstimmungsschwelle (0–1). Höher = weniger Thermal-Boxen; niedriger = mehr Erkennungen (Thermal-Werte liegen oft niedriger als RGB). Standard 0,65.",
     thermalMatchModeAria: "Thermal-Matching-Modus",
     thermalMatchModeTitle:
-      "Wie Thermal-Templates gematcht werden. Modi auf demselben Raster vergleichen; RGB bleibt unverändert.",
+      "Wie Thermal-Templates gematcht werden. Modi auf demselben Raster vergleichen; RGB bleibt unverändert. Standard: +15 % Kontext.",
     thermalMatchModeHint: "Thermal-Matcher (Modi vergleichen, dann Erkennung neu starten)",
     thermalMatchDefault: "Standard",
     thermalMatchDefaultTitle: "Klassisches Graustufen-Template-Matching auf Temperatur.",
     thermalMatchContext: "+15 % Kontext",
     thermalMatchContextTitle:
-      "Matching mit um 15 % je Seite vergrößerten Templates, Ausgabe in exakter Panelgröße.",
+      "Matching mit um 15 % je Seite vergrößerten Templates, Ausgabe in exakter Panelgröße. Standardmodus.",
     thermalMatchGradient: "Gradient",
     thermalMatchGradientTitle:
       "Matching auf Sobel-Kantenmagnituden statt Roh-°C.",
@@ -262,12 +262,14 @@ export const de: Dict = {
     templatesSome: "{{n}} von {{total}}",
     templatesTitle:
       "Wie viele Rasterzellen als Templates verwendet werden. 0 = alle Zellen (langsamste, beste Abdeckung). Höher = mehr Template-Vielfalt bei unterschiedlichen Panels; niedriger = schneller, weniger Abdeckung.",
-    tempCap: "Thermal-Temperaturgrenze °C (Standard 45)",
+    tempCap: "Thermal-Temperaturgrenze °C",
     tempCapTitle:
-      "Nur Thermal: begrenzt Suchbild-Temperaturen oberhalb dieses °C-Werts. Höher = heißere Pixel bleiben erhalten; niedriger = heiße Ausreißer werden stärker unterdrückt. Standard 45 °C.",
+      "Nur Thermal: begrenzt Suchbild-Temperaturen oberhalb dieses °C-Werts. Standard = Median der Pixeltemperaturen im Thermal-Raster + 10 °C (wird neu berechnet, wenn Sie das Thermal-Raster erzeugen oder kopieren).",
     advancedValidation: "Erweiterte Validierung (Verfeinerung)",
     advancedValidationTitle:
-      "Feinabstimmung nach NMS: DBSCAN-Rasteranpassung → Randbereinigung → Conway-Auffüllung. An = sauberere, regelmäßige Anordnungen; aus = nur rohe Matcher-Ausgabe.",
+      "Feinabstimmung nach NMS: DBSCAN-Rasteranpassung → Randbereinigung → Conway-Auffüllung. An = sauberere, regelmäßige Anordnungen; aus (Standard) = nur rohe Matcher-Ausgabe.",
+    cancel: "Abbrechen",
+    cancelTitle: "Laufende Erkennung stoppen",
     fineTune: "Konfidenz feinabstimmen",
     fineTuneTitle:
       "Verfeinert die Konfidenzschwelle. Höher = behält nur starke Spitzenwerte (strengere Bereinigung); niedriger = behält mehr schwache / rasterfremde Erkennungen. Standard 0,65.",
@@ -303,11 +305,19 @@ export const de: Dict = {
     margin: "Rand",
     marginTitle:
       "Zusätzlicher Rand um entzerrte Vorschau-Ausschnitte. Höher = mehr Kontext um das Panel; niedriger = engerer Zuschnitt nur auf das Panel.",
-    minIou: "Min. IoU",
+    minIou: "Min. IoU {{value}}",
     minIouTitle:
-      "Minimale Mittelpunkt-IoU zur Annahme eines RGB↔Thermal-Paars. Höher = nur strenge Übereinstimmungen; niedriger = behält schwächere / entferntere Paare.",
+      "Erforderliche Überlappung (0–1) zwischen RGB- und Thermal-Erkennung. Ziehen für eine Vorschau der Paare auf der Karte; danach Extraktion starten. Standard 0,75 = nur starke Überlappungen.",
+    previewHint: "Paar-Vorschau: {{count}}. Min. IoU anpassen, dann extrahieren wenn die Boxen passen.",
+    removeIsolated: "Isolierte entfernen",
+    removeIsolatedTitle:
+      "Schließt Panels ohne Nachbarn in einem Pitch links/rechts/oben/unten aus. Entfernt sie aus der Detection-Auswahl und aus Segmentierungsergebnissen.",
+    isolatedRemoved:
+      "Isolierte entfernt: RGB {{rgb}}, Thermal {{thermal}}, extrahierte Paare {{pairs}}.",
     run: "Paarung & Extraktion ausführen",
     extracting: "Wird extrahiert…",
+    cancel: "Abbrechen",
+    cancelTitle: "Laufende Segmentierung stoppen",
     runTitle: "Paart RGB- und Thermal-Erkennungen und extrahiert dann entzerrte Ausschnitte sowie Thermal-Statistiken.",
     saveLabels: "Labels speichern",
     saveLabelsTitle:
@@ -430,6 +440,8 @@ export const de: Dict = {
     preview: "Ausrichtungsvorschau",
     rePreview: "Ausrichtungsvorschau erneuern",
     previewRunning: "Läuft…",
+    cancel: "Abbrechen",
+    cancelTitle: "Laufende Ausrichtung stoppen",
     fit: "Einpassen",
     waitingOrtho: "Warten auf Orthofoto…",
     paramMaxRegGsd: "Max. Reg.-GSD (m)",
@@ -440,6 +452,10 @@ export const de: Dict = {
     errorBadParams: "Alle Ausrichtungsparameter müssen positive Zahlen sein.",
     consolePreviewTitle: "Orthoausrichtungsvorschau",
     consolePreviewDetail: "Phasenkorrelation + metrische Kachel-TPS — ausgerichtetes GeoTIFF wird geschrieben…",
+    consoleCancelTitle: "Ausrichtung wird abgebrochen",
+    consoleCancelDetail: "Ausrichtungsprozess wird gestoppt…",
+    consoleCancelledTitle: "Ausrichtung abgebrochen",
+    consoleCancelledDetail: "Vorschau gestoppt. Parameter anpassen und erneut versuchen.",
     consoleSaveTitle: "Ausrichtung wird gespeichert",
     consoleSaveDetail: "Orthoausrichtung wird als abgeschlossen markiert…",
     statusAligned: "Thermal an RGB ausgerichtet (Phase + TPS)",

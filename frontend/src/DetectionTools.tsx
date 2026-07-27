@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, DetectionParams } from "./api";
 import { useT } from "./i18n";
+import { NumberField } from "./ui/NumberField";
 import { useMinimized } from "./ui/useMinimized";
 
 export type DetectModality = "rgb" | "thermal";
 export type DetectRunMode = "rgb" | "thermal" | "both";
 export type ThermalMatchMode = "default" | "context_15" | "gradient";
+
+const PARAM_SAVE_MS = 300;
 
 export function DetectionTools(props: {
   onRefreshMap: () => void;
@@ -45,10 +48,9 @@ export function DetectionTools(props: {
   const t = useT();
   const [rows, setRows] = useState(4);
   const [cols, setCols] = useState(10);
-  // Legacy suite defaults (per-modality template_matching_threshold)
-  const [confidenceRgb, setConfidenceRgb] = useState(0.5);
-  const [confidenceThermal, setConfidenceThermal] = useState(0.5);
-  const [advancedValidation, setAdvancedValidation] = useState(true);
+  const [confidenceRgb, setConfidenceRgb] = useState(0.65);
+  const [confidenceThermal, setConfidenceThermal] = useState(0.65);
+  const [advancedValidation, setAdvancedValidation] = useState(false);
   const [fineTuneConf, setFineTuneConf] = useState(0.65);
   const [keepHighConfOutliers, setKeepHighConfOutliers] = useState(false);
   const [minClusterSize, setMinClusterSize] = useState(12);
@@ -58,8 +60,8 @@ export function DetectionTools(props: {
   const [fillConfidence, setFillConfidence] = useState(0.5);
   const [nms, setNms] = useState(0.05);
   const [numTemplates, setNumTemplates] = useState(0); // 0 = all grid cells
-  const [thermalCap, setThermalCap] = useState(45);
-  const [thermalMatchMode, setThermalMatchMode] = useState<ThermalMatchMode>("default");
+  const [thermalCap, setThermalCap] = useState(55);
+  const [thermalMatchMode, setThermalMatchMode] = useState<ThermalMatchMode>("context_15");
   const [status, setStatus] = useState("");
   const [rgbCount, setRgbCount] = useState(0);
   const [thermalCount, setThermalCount] = useState(0);
@@ -70,6 +72,27 @@ export function DetectionTools(props: {
   const [gridCellCount, setGridCellCount] = useState(0);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const paramsReady = useRef(false);
+  const saveTimer = useRef<number | null>(null);
+
+  function applyParams(p: DetectionParams) {
+    setRows(p.rows);
+    setCols(p.cols);
+    setConfidenceRgb(p.confidence_rgb);
+    setConfidenceThermal(p.confidence_thermal);
+    setNms(p.nms_iou);
+    setNumTemplates(p.num_templates);
+    setThermalCap(p.thermal_temp_cap);
+    setAdvancedValidation(p.advanced_validation);
+    setFineTuneConf(p.fine_tuning_confidence);
+    setThermalMatchMode(p.thermal_match_mode);
+    setKeepHighConfOutliers(p.keep_high_conf_outliers);
+    setMinClusterSize(p.min_cluster_size);
+    setDbscanMinSamples(p.dbscan_min_samples);
+    setWalkTolFrac(p.walk_tol_frac);
+    setPitchSlack(p.pitch_slack);
+    setFillConfidence(p.fill_confidence);
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -83,6 +106,10 @@ export function DetectionTools(props: {
       setHasRgbGrid(Boolean(st.rgb?.has_grid ?? st.has_grid));
       setHasThermalGrid(Boolean(st.thermal?.has_grid));
       setRunning(Boolean(st.job?.running));
+      if (!paramsReady.current && st.params) {
+        applyParams(st.params);
+        paramsReady.current = true;
+      }
     } catch (e) {
       onError(String(e));
     }
@@ -91,6 +118,53 @@ export function DetectionTools(props: {
   useEffect(() => {
     void refresh();
   }, [refresh, statusEpoch]);
+
+  useEffect(() => {
+    if (!paramsReady.current) return;
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void api
+        .putDetectionParams({
+          rows,
+          cols,
+          confidence_rgb: confidenceRgb,
+          confidence_thermal: confidenceThermal,
+          nms_iou: nms,
+          num_templates: numTemplates,
+          thermal_temp_cap: thermalCap,
+          advanced_validation: advancedValidation,
+          fine_tuning_confidence: fineTuneConf,
+          thermal_match_mode: thermalMatchMode,
+          keep_high_conf_outliers: keepHighConfOutliers,
+          min_cluster_size: minClusterSize,
+          dbscan_min_samples: dbscanMinSamples,
+          walk_tol_frac: walkTolFrac,
+          pitch_slack: pitchSlack,
+          fill_confidence: fillConfidence,
+        })
+        .catch(() => undefined);
+    }, PARAM_SAVE_MS);
+    return () => {
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    };
+  }, [
+    rows,
+    cols,
+    confidenceRgb,
+    confidenceThermal,
+    nms,
+    numTemplates,
+    thermalCap,
+    advancedValidation,
+    fineTuneConf,
+    thermalMatchMode,
+    keepHighConfOutliers,
+    minClusterSize,
+    dbscanMinSamples,
+    walkTolFrac,
+    pitchSlack,
+    fillConfidence,
+  ]);
 
   useEffect(() => {
     if (!hasGrid) {
@@ -118,6 +192,7 @@ export function DetectionTools(props: {
         if (cancelled) return;
         if (!job.running) {
           setRunning(false);
+          if (job.error && !job.cancelled) onError(String(job.error));
           await refresh();
           onRefreshMap();
           onProjectRefresh();
@@ -134,12 +209,23 @@ export function DetectionTools(props: {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [running, refresh, onRefreshMap, onProjectRefresh]);
+  }, [running, refresh, onRefreshMap, onProjectRefresh, onError]);
+
+  async function cancelDetect() {
+    try {
+      await api.cancelDetection();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
 
   async function generateGrid() {
     setBusy(true);
     try {
-      await api.generateGrid(rows, cols, modality);
+      const result = await api.generateGrid(rows, cols, modality);
+      if (result.suggested_thermal_temp_cap != null) {
+        setThermalCap(result.suggested_thermal_temp_cap);
+      }
       setEditCorners(false);
       await refresh();
       onRefreshMap();
@@ -153,7 +239,10 @@ export function DetectionTools(props: {
   async function copyToThermal() {
     setBusy(true);
     try {
-      await api.copyGridToThermal();
+      const result = await api.copyGridToThermal();
+      if (result.suggested_thermal_temp_cap != null) {
+        setThermalCap(result.suggested_thermal_temp_cap);
+      }
       setModality("thermal");
       await refresh();
       onRefreshMap();
@@ -314,26 +403,14 @@ export function DetectionTools(props: {
           title={t("detection.rowsTitle")}
         >
           {t("detection.rows")}
-          <input
-            type="number"
-            min={1}
-            max={200}
-            value={rows}
-            onChange={(e) => setRows(Number(e.target.value))}
-          />
+          <NumberField min={1} max={200} step={1} value={rows} onChange={setRows} />
         </label>
         <label
           className="tool-field"
           title={t("detection.colsTitle")}
         >
           {t("detection.cols")}
-          <input
-            type="number"
-            min={1}
-            max={200}
-            value={cols}
-            onChange={(e) => setCols(Number(e.target.value))}
-          />
+          <NumberField min={1} max={200} step={1} value={cols} onChange={setCols} />
         </label>
       </div>
 
@@ -368,13 +445,12 @@ export function DetectionTools(props: {
         title={t("detection.confRgbTitle")}
       >
         {t("detection.confRgb")}
-        <input
-          type="number"
+        <NumberField
           min={0.1}
           max={0.99}
           step={0.01}
           value={confidenceRgb}
-          onChange={(e) => setConfidenceRgb(Number(e.target.value))}
+          onChange={setConfidenceRgb}
         />
       </label>
       )}
@@ -383,13 +459,12 @@ export function DetectionTools(props: {
         title={t("detection.confThermalTitle")}
       >
         {t("detection.confThermal")}
-        <input
-          type="number"
+        <NumberField
           min={0.1}
           max={0.99}
           step={0.01}
           value={confidenceThermal}
-          onChange={(e) => setConfidenceThermal(Number(e.target.value))}
+          onChange={setConfidenceThermal}
         />
       </label>
       <div
@@ -429,27 +504,19 @@ export function DetectionTools(props: {
         title={t("detection.nmsTitle")}
       >
         {t("detection.nms")}
-        <input
-          type="number"
-          min={0.01}
-          max={0.2}
-          step={0.01}
-          value={nms}
-          onChange={(e) => setNms(Number(e.target.value))}
-        />
+        <NumberField min={0.01} max={0.2} step={0.01} value={nms} onChange={setNms} />
       </label>
       <label
         className="tool-field"
         title={t("detection.templatesTitle")}
       >
         {t("detection.templates", { hint: tplHint })}
-        <input
-          type="number"
+        <NumberField
           min={0}
           max={500}
           step={1}
           value={numTemplates}
-          onChange={(e) => setNumTemplates(Number(e.target.value))}
+          onChange={setNumTemplates}
         />
       </label>
       <label
@@ -457,14 +524,7 @@ export function DetectionTools(props: {
         title={t("detection.tempCapTitle")}
       >
         {t("detection.tempCap")}
-        <input
-          type="number"
-          min={10}
-          max={70}
-          step={1}
-          value={thermalCap}
-          onChange={(e) => setThermalCap(Number(e.target.value))}
-        />
+        <NumberField min={10} max={70} step={1} value={thermalCap} onChange={setThermalCap} />
       </label>
       <label
         className="tool-field tool-check"
@@ -482,68 +542,62 @@ export function DetectionTools(props: {
           <p className="muted tool-hint">{t("detection.advancedBlockHint")}</p>
           <label className="tool-field" title={t("detection.minClusterTitle")}>
             {t("detection.minCluster")}
-            <input
-              type="number"
+            <NumberField
               min={3}
               max={200}
               step={1}
               value={minClusterSize}
-              onChange={(e) => setMinClusterSize(Number(e.target.value))}
+              onChange={setMinClusterSize}
             />
           </label>
           <label className="tool-field" title={t("detection.dbscanMinTitle")}>
             {t("detection.dbscanMin")}
-            <input
-              type="number"
+            <NumberField
               min={2}
               max={50}
               step={1}
               value={dbscanMinSamples}
-              onChange={(e) => setDbscanMinSamples(Number(e.target.value))}
+              onChange={setDbscanMinSamples}
             />
           </label>
           <label className="tool-field" title={t("detection.fineTuneTitle")}>
             {t("detection.fineTune")}
-            <input
-              type="number"
+            <NumberField
               min={0.1}
               max={0.99}
               step={0.01}
               value={fineTuneConf}
-              onChange={(e) => setFineTuneConf(Number(e.target.value))}
+              onChange={setFineTuneConf}
             />
           </label>
           <label className="tool-field" title={t("detection.walkTolTitle")}>
             {t("detection.walkTol", { pct: Math.round(walkTolFrac * 100) })}
-            <input
-              type="number"
+            <NumberField
               min={0.02}
               max={0.4}
               step={0.01}
               value={walkTolFrac}
-              onChange={(e) => setWalkTolFrac(Number(e.target.value))}
+              onChange={setWalkTolFrac}
             />
           </label>
           <label className="tool-field" title={t("detection.pitchSlackTitle")}>
             {t("detection.pitchSlack", { pct: Math.round(pitchSlack * 100) })}
-            <input
-              type="number"
+            <NumberField
               min={0}
               max={0.3}
               step={0.01}
               value={pitchSlack}
-              onChange={(e) => setPitchSlack(Number(e.target.value))}
+              onChange={setPitchSlack}
             />
           </label>
           <label className="tool-field" title={t("detection.fillConfTitle")}>
             {t("detection.fillConf")}
-            <input
-              type="number"
+            <NumberField
               min={0.05}
               max={0.99}
               step={0.01}
               value={fillConfidence}
-              onChange={(e) => setFillConfidence(Number(e.target.value))}
+              onChange={setFillConfidence}
             />
           </label>
           <label
@@ -560,57 +614,48 @@ export function DetectionTools(props: {
         </div>
       )}
       {!thermalOnly && (
-      <label
-        className="tool-field"
+      <MapFilterSlider
         title={t("detection.mapFilterRgbTitle")}
-      >
-        {t("detection.mapFilterRgb", { value: displayConfidenceRgb.toFixed(2) })}
-        <input
-          type="range"
-          min={0}
-          max={0.99}
-          step={0.01}
-          value={displayConfidenceRgb}
-          onChange={(e) => setDisplayConfidenceRgb(Number(e.target.value))}
-        />
-      </label>
+        value={displayConfidenceRgb}
+        onCommit={setDisplayConfidenceRgb}
+        formatLabel={(v) => t("detection.mapFilterRgb", { value: v.toFixed(2) })}
+      />
       )}
-      <label
-        className="tool-field"
+      <MapFilterSlider
         title={t("detection.mapFilterThermalTitle")}
-      >
-        {t("detection.mapFilterThermal", { value: displayConfidenceThermal.toFixed(2) })}
-        <input
-          type="range"
-          min={0}
-          max={0.99}
-          step={0.01}
-          value={displayConfidenceThermal}
-          onChange={(e) => setDisplayConfidenceThermal(Number(e.target.value))}
-        />
-      </label>
+        value={displayConfidenceThermal}
+        onCommit={setDisplayConfidenceThermal}
+        formatLabel={(v) => t("detection.mapFilterThermal", { value: v.toFixed(2) })}
+      />
 
-      <button
-        type="button"
-        className="primary"
-        disabled={busy || running || !canRun}
-        title={
-          canRun
-            ? thermalOnly
-              ? t("detection.runTitleReadyThermal")
-              : t("detection.runTitleReady")
+      <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || running || !canRun}
+          title={
+            canRun
+              ? thermalOnly
+                ? t("detection.runTitleReadyThermal")
+                : t("detection.runTitleReady")
+              : thermalOnly
+                ? t("detection.runTitleBlockedThermal")
+                : t("detection.runTitleBlocked")
+          }
+          onClick={runDetect}
+        >
+          {running
+            ? t("detection.running")
             : thermalOnly
-              ? t("detection.runTitleBlockedThermal")
-              : t("detection.runTitleBlocked")
-        }
-        onClick={runDetect}
-      >
-        {running
-          ? t("detection.running")
-          : thermalOnly
-            ? t("detection.runThermalOnly")
-            : t("detection.run")}
-      </button>
+              ? t("detection.runThermalOnly")
+              : t("detection.run")}
+        </button>
+        {running && (
+          <button type="button" onClick={() => void cancelDetect()} title={t("detection.cancelTitle")}>
+            {t("detection.cancel")}
+          </button>
+        )}
+      </div>
 
       <div
         className="detection-counts"
@@ -649,5 +694,67 @@ export function DetectionTools(props: {
         </>
       )}
     </div>
+  );
+}
+
+/** Range slider that only commits the value when the user releases (or finishes keyboard adjust). */
+function MapFilterSlider(props: {
+  title: string;
+  value: number;
+  onCommit: (v: number) => void;
+  formatLabel: (v: number) => string;
+}) {
+  const { title, value, onCommit, formatLabel } = props;
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  const dragging = useRef(false);
+
+  useEffect(() => {
+    if (!dragging.current) {
+      draftRef.current = value;
+      setDraft(value);
+    }
+  }, [value]);
+
+  function commit() {
+    dragging.current = false;
+    const next = draftRef.current;
+    if (next !== value) onCommit(next);
+  }
+
+  return (
+    <label className="tool-field" title={title}>
+      {formatLabel(draft)}
+      <input
+        type="range"
+        min={0}
+        max={0.99}
+        step={0.01}
+        value={draft}
+        onPointerDown={() => {
+          dragging.current = true;
+        }}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          draftRef.current = v;
+          setDraft(v);
+        }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onBlur={commit}
+        onKeyUp={(e) => {
+          if (
+            e.key === "ArrowLeft" ||
+            e.key === "ArrowRight" ||
+            e.key === "Home" ||
+            e.key === "End" ||
+            e.key === "PageUp" ||
+            e.key === "PageDown"
+          ) {
+            commit();
+          }
+        }}
+      />
+    </label>
   );
 }

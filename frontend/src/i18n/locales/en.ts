@@ -244,19 +244,19 @@ export const en: Dict = {
       "Copy the RGB AOI + grid into the thermal modality (same corners/cells in WGS84). Then tweak thermal corners if needed.",
     confRgb: "RGB match confidence",
     confRgbTitle:
-      "RGB match threshold (0–1). Higher = fewer, stricter RGB boxes; lower = more detections including weaker matches. Default 0.5.",
+      "RGB match threshold (0–1). Higher = fewer, stricter RGB boxes; lower = more detections including weaker matches. Default 0.65.",
     confThermal: "Thermal match confidence",
     confThermalTitle:
-      "Thermal match threshold (0–1). Higher = fewer thermal boxes; lower = more detections (thermal scores often run lower than RGB). Default 0.5.",
+      "Thermal match threshold (0–1). Higher = fewer thermal boxes; lower = more detections (thermal scores often run lower than RGB). Default 0.65.",
     thermalMatchModeAria: "Thermal matching mode",
     thermalMatchModeTitle:
-      "How thermal templates are matched. Compare modes on the same grid; RGB is unchanged. Default stays the classic matcher.",
+      "How thermal templates are matched. Compare modes on the same grid; RGB is unchanged. Default is +15% context.",
     thermalMatchModeHint: "Thermal matcher (compare modes, then re-run detect)",
     thermalMatchDefault: "Default",
-    thermalMatchDefaultTitle: "Classic grayscale template match on temperature (current behavior).",
+    thermalMatchDefaultTitle: "Classic grayscale template match on temperature.",
     thermalMatchContext: "+15% context",
     thermalMatchContextTitle:
-      "Match with templates expanded 15% on each side (includes borders/gaps), then report boxes at exact panel size.",
+      "Match with templates expanded 15% on each side (includes borders/gaps), then report boxes at exact panel size. Default mode.",
     thermalMatchGradient: "Gradient",
     thermalMatchGradientTitle:
       "Match on Sobel edge magnitude instead of raw °C — favors panel borders over flat grass.",
@@ -268,12 +268,14 @@ export const en: Dict = {
     templatesSome: "{{n}} of {{total}}",
     templatesTitle:
       "How many grid cells to use as templates. 0 = all cells (slowest, best coverage). Higher = more template variety when panels differ; lower = faster, less coverage.",
-    tempCap: "Thermal temp cap °C (default 45)",
+    tempCap: "Thermal temp cap °C",
     tempCapTitle:
-      "Thermal only: clamp search-image temperatures above this °C. Higher = keep hotter pixels; lower = suppress hot outliers more. Default 45°C.",
+      "Thermal only: clamp search-image temperatures above this °C. Default = median temperature of pixels inside the thermal grid + 10°C (recomputed when you generate or copy the thermal grid).",
     advancedValidation: "Advanced validation (refine)",
     advancedValidationTitle:
-      "Post-NMS fine-tuning: DBSCAN + lattice walk → border prune → Conway fill. On = cleaner regular arrays; off = raw matcher output only.",
+      "Post-NMS fine-tuning: DBSCAN + lattice walk → border prune → Conway fill. On = cleaner regular arrays; off (default) = raw matcher output only.",
+    cancel: "Cancel",
+    cancelTitle: "Stop the running detection job",
     advancedBlockHint: "Refine settings (applied when Advanced validation is on).",
     minCluster: "Min cluster size",
     minClusterTitle:
@@ -329,12 +331,20 @@ export const en: Dict = {
     margin: "Margin",
     marginTitle:
       "Extra border around deskewed preview crops. Higher = more context around the panel; lower = tighter crop on the panel only.",
-    minIou: "Min IoU",
+    minIou: "Min IoU {{value}}",
     minIouTitle:
-      "Minimum center IoU to accept an RGB↔thermal pair. Higher = stricter matches only; lower = keep weaker / more distant pairs.",
+      "Overlap (0–1) required between an RGB detection and a thermal detection to count as one paired panel. Drag to preview which boxes would pair on the map; then run extract when satisfied. Default 0.75 keeps only strong overlaps. Raise for stricter pairing; lower if panels look shifted.",
+    previewHint: "Preview pairs: {{count}}. Adjust Min IoU, then run extract when the boxes look right.",
+    removeIsolated: "Remove isolated",
+    removeIsolatedTitle:
+      "Exclude boxes in the current IoU view that have no neighbor at ±1 cell of your grid (L/R/U/D, 10% length/height tol). Uses grid cell pitch; ignores detections not shown on the map.",
+    isolatedRemoved:
+      "Removed isolated: RGB {{rgb}}, thermal {{thermal}}, extracted pairs {{pairs}}.",
     run: "Run pairing & extract",
     runThermal: "Extract thermal panels",
     extracting: "Extracting…",
+    cancel: "Cancel",
+    cancelTitle: "Stop the running segmentation job",
     runTitle: "Pair RGB and thermal detections, then extract deskewed crops and thermal stats.",
     runTitleThermal: "Extract deskewed thermal crops and stats from thermal detections (no RGB pairing).",
     saveLabels: "Save Labels",
@@ -481,6 +491,8 @@ export const en: Dict = {
     preview: "Preview alignment",
     rePreview: "Re-preview alignment",
     previewRunning: "Running…",
+    cancel: "Cancel",
+    cancelTitle: "Stop the running alignment",
     fit: "Fit",
     waitingOrtho: "Waiting for orthophoto…",
     paramMaxRegGsd: "Max reg. GSD (m)",
@@ -491,6 +503,10 @@ export const en: Dict = {
     errorBadParams: "All alignment parameters must be positive numbers.",
     consolePreviewTitle: "Ortho alignment preview",
     consolePreviewDetail: "AKAZE affine + metre-tile TPS — writing native aligned thermal…",
+    consoleCancelTitle: "Cancelling alignment",
+    consoleCancelDetail: "Stopping the alignment worker…",
+    consoleCancelledTitle: "Alignment cancelled",
+    consoleCancelledDetail: "Preview stopped. Adjust parameters and try again when ready.",
     consoleSaveTitle: "Saving alignment",
     consoleSaveDetail: "Marking ortho alignment complete…",
     statusAligned: "Thermal aligned to RGB (AKAZE + TPS)",

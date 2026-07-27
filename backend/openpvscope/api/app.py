@@ -14,7 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from openpvscope import __version__
-from openpvscope.alignment import DEFAULT_PARAMS, run_alignment, save_alignment_artifacts
+from openpvscope.alignment import (
+    AlignmentCancelled,
+    DEFAULT_PARAMS,
+    request_cancel_alignment,
+    run_alignment,
+    save_alignment_artifacts,
+)
 from openpvscope.console import get_console
 from openpvscope.detection import (
     clear_detection,
@@ -22,11 +28,22 @@ from openpvscope.detection import (
     detection_job_status,
     detection_status,
     generate_grid,
+    load_detection_params,
     load_geojson,
+    request_cancel_detection,
     save_aoi_geojson,
+    save_detection_params,
     start_detection_job,
 )
-from openpvscope.detection.pipeline import detection_dir
+from openpvscope.detection.pipeline import ensure_thermal_temp_cap_suggestion
+from openpvscope.detection.pipeline import (
+    DEFAULT_ADVANCED_VALIDATION,
+    DEFAULT_CONFIDENCE,
+    DEFAULT_THERMAL_MATCH_MODE,
+    DEFAULT_THERMAL_TEMP_CAP,
+    detection_dir,
+)
+from openpvscope.detection.prefs import default_detection_params
 from openpvscope.detection.panel_selection import (
     apply_panel_selection,
     load_panels_all,
@@ -60,12 +77,19 @@ from openpvscope.photogrammetry import (
 from openpvscope.project import get_store
 from openpvscope.project.paths import ortho_rgb, ortho_thermal, ortho_thermal_aligned
 from openpvscope.segmentation import (
+    load_segmentation_params,
+    request_cancel_segmentation,
+    save_segmentation_params,
     segmentation_job_status,
     segmentation_status,
     start_segmentation_job,
 )
+from openpvscope.segmentation.pairing import DEFAULT_MIN_IOU
+from openpvscope.segmentation.prefs import default_segmentation_params
 from openpvscope.segmentation.extract import load_pairs_geojson_enriched, read_thermal_raw, segmentation_root
 from openpvscope.segmentation.labels import save_thermal_labels
+from openpvscope.segmentation.orphans import remove_isolated_panels
+from openpvscope.segmentation.preview import build_pair_preview_geojson
 from openpvscope.segmentation.thermal_color import LABEL_INDICATORS, THERMAL_INDICATORS
 from openpvscope.settings import (
     clear_recent_projects,
@@ -177,12 +201,21 @@ class PhotogrammetryRunBody(BaseModel):
     products: PhotoProductsBody | None = None
 
 
+class PhotoThermalSetupBody(BaseModel):
+    emissivity: float = Field(default=0.95, ge=0.0, le=1.0)
+    distance: float = Field(default=5.0, ge=0.0)
+    humidity: float = Field(default=50.0, ge=0.0, le=100.0)
+    reflection: float = Field(default=25.0)
+    parametric_fallback: bool = False
+
+
 class PhotogrammetrySetupBody(BaseModel):
     wizard_complete: bool = False
     modalities: Literal["rgb_and_thermal", "thermal_only"] = "rgb_and_thermal"
     mode: Literal["process", "skip"] = "process"
     odx: OdxOptionsBody | None = None
     products: PhotoProductsBody | None = None
+    thermal: PhotoThermalSetupBody | None = None
 
 
 class SettingsPatch(BaseModel):
@@ -211,20 +244,22 @@ class GridBody(BaseModel):
 
 
 class DetectRunBody(BaseModel):
-    # Per-modality match thresholds (legacy suite stored these separately; default 0.5 each)
-    confidence_rgb: float = Field(default=0.5, ge=0.1, le=0.99)
-    confidence_thermal: float = Field(default=0.5, ge=0.1, le=0.99)
+    # Per-modality match thresholds
+    confidence_rgb: float = Field(default=DEFAULT_CONFIDENCE, ge=0.1, le=0.99)
+    confidence_thermal: float = Field(default=DEFAULT_CONFIDENCE, ge=0.1, le=0.99)
     # Deprecated alias — if sent alone, applied to both modalities
     confidence: float | None = Field(default=None, ge=0.1, le=0.99)
     nms_iou: float = Field(default=0.05, ge=0.01, le=0.20)
     # 0 = use ALL grid cells as templates
     num_templates: int = Field(default=0, ge=0, le=500)
-    thermal_temp_cap: float | None = Field(default=45.0, ge=10.0, le=70.0)
+    thermal_temp_cap: float | None = Field(
+        default=DEFAULT_THERMAL_TEMP_CAP, ge=10.0, le=70.0
+    )
     modality: Literal["rgb", "thermal", "both"] = "both"
-    advanced_validation: bool = True
+    advanced_validation: bool = DEFAULT_ADVANCED_VALIDATION
     fine_tuning_confidence: float = Field(default=0.65, ge=0.1, le=0.99)
     # Thermal-only matcher variants (ignored for RGB)
-    thermal_match_mode: Literal["default", "context_15", "gradient"] = "default"
+    thermal_match_mode: Literal["default", "context_15", "gradient"] = DEFAULT_THERMAL_MATCH_MODE
     # Legacy soft refine: keep high-conf DBSCAN/grid rejects (default off = strict geometry)
     keep_high_conf_outliers: bool = False
     # Drop clusters smaller than this after DBSCAN (not the DBSCAN density param)
@@ -242,7 +277,41 @@ class DetectRunBody(BaseModel):
 class SegmentRunBody(BaseModel):
     margin_factor: float = Field(default=0.2, ge=0.0, le=1.0)
     search_radius_m: float | None = Field(default=None, ge=0.5, le=50.0)
-    min_iou: float = Field(default=0.1, ge=0.0, le=1.0)
+    min_iou: float = Field(default=DEFAULT_MIN_IOU, ge=0.0, le=1.0)
+
+
+class DetectionParamsBody(BaseModel):
+    rows: int | None = Field(default=None, ge=1, le=200)
+    cols: int | None = Field(default=None, ge=1, le=200)
+    confidence_rgb: float | None = Field(default=None, ge=0.1, le=0.99)
+    confidence_thermal: float | None = Field(default=None, ge=0.1, le=0.99)
+    nms_iou: float | None = Field(default=None, ge=0.01, le=0.20)
+    num_templates: int | None = Field(default=None, ge=0, le=500)
+    thermal_temp_cap: float | None = Field(default=None, ge=10.0, le=70.0)
+    advanced_validation: bool | None = None
+    fine_tuning_confidence: float | None = Field(default=None, ge=0.1, le=0.99)
+    thermal_match_mode: Literal["default", "context_15", "gradient"] | None = None
+    keep_high_conf_outliers: bool | None = None
+    min_cluster_size: int | None = Field(default=None, ge=3, le=200)
+    dbscan_min_samples: int | None = Field(default=None, ge=2, le=50)
+    walk_tol_frac: float | None = Field(default=None, ge=0.02, le=0.40)
+    pitch_slack: float | None = Field(default=None, ge=0.0, le=0.30)
+    fill_confidence: float | None = Field(default=None, ge=0.05, le=0.99)
+
+
+class SegmentationParamsBody(BaseModel):
+    margin_factor: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_iou: float | None = Field(default=None, ge=0.0, le=1.0)
+    search_radius_m: float | None = Field(default=None, ge=0.5, le=50.0)
+
+
+class AlignParamsBody(BaseModel):
+    max_reg_gsd_m: float | None = None
+    global_max_m: float | None = None
+    local_max_m: float | None = None
+    tile_m: float | None = None
+    stride_m: float | None = None
+    nodata: float | None = None
 
 
 class SegmentLabelsBody(BaseModel):
@@ -1238,6 +1307,35 @@ def alignment_status() -> dict[str, Any]:
     }
 
 
+@app.put("/api/alignment/params")
+def put_alignment_params(body: AlignParamsBody) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    import json
+
+    align_dir = store.root / "alignment"
+    align_dir.mkdir(parents=True, exist_ok=True)
+    path = align_dir / "params.json"
+    current = dict(DEFAULT_PARAMS)
+    if path.is_file():
+        try:
+            current.update(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    patch = body.model_dump(mode="json", exclude_none=True)
+    current.update(patch)
+    path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    store.autosave()
+    return {"ok": True, "params": current, "defaults": DEFAULT_PARAMS}
+
+
+@app.post("/api/alignment/cancel")
+def alignment_cancel() -> dict[str, Any]:
+    cancelled = request_cancel_alignment()
+    return {"cancelled": cancelled}
+
+
 @app.post("/api/alignment/preview")
 def alignment_preview(body: AlignBody) -> dict[str, Any]:
     """Run Phase→TPS registration and write aligned thermal without marking the step done."""
@@ -1286,6 +1384,9 @@ def alignment_preview(body: AlignBody) -> dict[str, Any]:
             ok=True,
             message=f"Alignment preview ready — check the split view ({runtime_s})",
         )
+    except AlignmentCancelled:
+        console.end_job(ok=False, message="Cancelled")
+        raise HTTPException(400, "Alignment cancelled") from None
     except Exception as e:
         console.end_job(ok=False, message=str(e))
         raise HTTPException(400, str(e)) from e
@@ -1337,9 +1438,35 @@ def api_detection_status() -> dict[str, Any]:
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
+    suggested = ensure_thermal_temp_cap_suggestion(store.root)
     st = detection_status(store.root)
     st["job"] = detection_job_status()
+    st["params"] = load_detection_params(store.root)
+    defaults = default_detection_params()
+    if suggested is not None:
+        defaults["thermal_temp_cap"] = suggested
+        st["suggested_thermal_temp_cap"] = suggested
+    st["defaults"] = defaults
     return st
+
+
+@app.put("/api/detection/params")
+def api_detection_put_params(body: DetectionParamsBody) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    current = load_detection_params(store.root)
+    patch = body.model_dump(mode="json", exclude_none=True)
+    current.update(patch)
+    saved = save_detection_params(store.root, current)
+    store.autosave()
+    return {"ok": True, "params": saved, "defaults": default_detection_params()}
+
+
+@app.post("/api/detection/cancel")
+def api_detection_cancel() -> dict[str, Any]:
+    cancelled = request_cancel_detection()
+    return {"cancelled": cancelled}
 
 
 @app.get("/api/detection/aoi")
@@ -1425,6 +1552,26 @@ def api_detection_run(body: DetectRunBody) -> dict[str, Any]:
     if body.confidence is not None:
         conf_rgb = body.confidence
         conf_thermal = body.confidence
+    save_detection_params(
+        store.root,
+        {
+            **load_detection_params(store.root),
+            "confidence_rgb": conf_rgb,
+            "confidence_thermal": conf_thermal,
+            "nms_iou": body.nms_iou,
+            "num_templates": body.num_templates,
+            "thermal_temp_cap": body.thermal_temp_cap,
+            "advanced_validation": body.advanced_validation,
+            "fine_tuning_confidence": body.fine_tuning_confidence,
+            "thermal_match_mode": body.thermal_match_mode,
+            "keep_high_conf_outliers": body.keep_high_conf_outliers,
+            "min_cluster_size": body.min_cluster_size,
+            "dbscan_min_samples": body.dbscan_min_samples,
+            "walk_tol_frac": body.walk_tol_frac,
+            "pitch_slack": body.pitch_slack,
+            "fill_confidence": body.fill_confidence,
+        },
+    )
     try:
         start_detection_job(
             store,
@@ -1541,7 +1688,32 @@ def api_segmentation_status() -> dict[str, Any]:
         raise HTTPException(404, "No project open")
     st = segmentation_status(store.root)
     st["job"] = segmentation_job_status()
+    st["params"] = load_segmentation_params(store.root)
+    st["defaults"] = default_segmentation_params()
     return st
+
+
+@app.put("/api/segmentation/params")
+def api_segmentation_put_params(body: SegmentationParamsBody) -> dict[str, Any]:
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    current = load_segmentation_params(store.root)
+    if body.margin_factor is not None:
+        current["margin_factor"] = body.margin_factor
+    if body.min_iou is not None:
+        current["min_iou"] = body.min_iou
+    if "search_radius_m" in body.model_fields_set:
+        current["search_radius_m"] = body.search_radius_m
+    saved = save_segmentation_params(store.root, current)
+    store.autosave()
+    return {"ok": True, "params": saved, "defaults": default_segmentation_params()}
+
+
+@app.post("/api/segmentation/cancel")
+def api_segmentation_cancel() -> dict[str, Any]:
+    cancelled = request_cancel_segmentation()
+    return {"cancelled": cancelled}
 
 
 @app.post("/api/segmentation/run")
@@ -1549,6 +1721,14 @@ def api_segmentation_run(body: SegmentRunBody = SegmentRunBody()) -> dict[str, A
     store = get_store()
     if not store.is_open:
         raise HTTPException(404, "No project open")
+    save_segmentation_params(
+        store.root,
+        {
+            "margin_factor": body.margin_factor,
+            "min_iou": body.min_iou,
+            "search_radius_m": body.search_radius_m,
+        },
+    )
     try:
         start_segmentation_job(
             store,
@@ -1585,6 +1765,92 @@ def api_segmentation_pairs_geojson() -> dict[str, Any]:
     if not store.is_open:
         raise HTTPException(404, "No project open")
     return load_pairs_geojson_enriched(store.root)
+
+
+@app.get("/api/segmentation/pair-preview.geojson")
+def api_segmentation_pair_preview(
+    min_iou: float = Query(default=0.0, ge=0.0, le=1.0),
+    search_radius_m: float | None = Query(default=None, ge=0.5, le=50.0),
+) -> dict[str, Any]:
+    """
+    Candidate RGB↔thermal pairs (no crop extraction).
+
+    Call with min_iou=0 once, then filter by IoU on the client for a responsive slider.
+    """
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    console = get_console()
+    console.begin_job("IoU pair preview", detail="Computing RGB↔thermal candidates")
+
+    def progress(p: float | None, msg: str, *, level: str = "info") -> None:
+        lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+        console.set_progress(p, detail=msg, step="pair-preview", level=lvl)  # type: ignore[arg-type]
+
+    def log_cb(level: str, msg: str) -> None:
+        lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+        console.log(msg, level=lvl, step="pair-preview")  # type: ignore[arg-type]
+
+    try:
+        result = build_pair_preview_geojson(
+            store.root,
+            min_iou=min_iou,
+            search_radius_m=search_radius_m,
+            progress=progress,
+            log=log_cb,
+        )
+        n = int(result.get("count") or 0)
+        console.end_job(ok=True, message=f"{n} candidate pairs (min_iou={min_iou})")
+        return result
+    except FileNotFoundError as e:
+        console.end_job(ok=False, message=str(e))
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        console.end_job(ok=False, message=str(e))
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/segmentation/remove-isolated")
+def api_segmentation_remove_isolated() -> dict[str, Any]:
+    """Exclude panels with no neighbor at ±1 pitch; prune matching segmentation pairs."""
+    store = get_store()
+    if not store.is_open:
+        raise HTTPException(404, "No project open")
+    console = get_console()
+    console.begin_job("Remove isolated panels", detail="User-grid ±1 pitch (10% L/H tol)")
+    console.log("Checkpointing project…", level="verbose", step="remove-isolated")
+    store.checkpoint("Before remove isolated panels")
+    thermal_only = load_setup(store.root).get("modalities") == "thermal_only"
+
+    def progress(p: float | None, msg: str, *, level: str = "info") -> None:
+        lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+        console.set_progress(p, detail=msg, step="remove-isolated", level=lvl)  # type: ignore[arg-type]
+
+    def log_cb(level: str, msg: str) -> None:
+        lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+        console.log(msg, level=lvl, step="remove-isolated")  # type: ignore[arg-type]
+
+    try:
+        result = remove_isolated_panels(
+            store.root,
+            thermal_only=thermal_only,
+            progress=progress,
+            log=log_cb,
+        )
+        console.log("Autosaving project…", level="verbose", step="remove-isolated")
+        store.autosave()
+        msg = (
+            f"Removed RGB={result['removed_rgb']} thermal={result['removed_thermal']} "
+            f"pairs={result['removed_pairs']}"
+        )
+        console.end_job(ok=True, message=msg)
+        return result
+    except FileNotFoundError as e:
+        console.end_job(ok=False, message=str(e))
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        console.end_job(ok=False, message=str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @app.get("/api/segmentation/panel/{panel_id}/preview/{kind}")

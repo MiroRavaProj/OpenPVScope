@@ -14,12 +14,31 @@ from openpvscope.workflow import mark_step
 
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
-_state: dict[str, Any] = {"running": False, "error": None, "result": None}
+_cancel = threading.Event()
+_state: dict[str, Any] = {
+    "running": False,
+    "cancelable": False,
+    "cancelled": False,
+    "error": None,
+    "result": None,
+}
+
+
+class JobCancelled(Exception):
+    """Raised when the user requests segmentation cancel."""
 
 
 def segmentation_job_status() -> dict[str, Any]:
     with _lock:
         return dict(_state)
+
+
+def request_cancel_segmentation() -> bool:
+    with _lock:
+        if not _state.get("running"):
+            return False
+        _cancel.set()
+        return True
 
 
 def start_segmentation_job(
@@ -33,7 +52,16 @@ def start_segmentation_job(
     with _lock:
         if _state.get("running"):
             raise RuntimeError("Segmentation already running")
-        _state.update({"running": True, "error": None, "result": None})
+        _cancel.clear()
+        _state.update(
+            {
+                "running": True,
+                "cancelable": True,
+                "cancelled": False,
+                "error": None,
+                "result": None,
+            }
+        )
 
     console = get_console()
     thermal_only = False
@@ -53,8 +81,17 @@ def start_segmentation_job(
         console.begin_job("Segmentation", detail=job_detail)
         store.checkpoint("Before segmentation")
 
-        def progress(p: float | None, msg: str) -> None:
-            console.set_progress(p, detail=msg, step="segmentation", level="info")
+        def progress(p: float | None, msg: str, *, level: str = "info") -> None:
+            if _cancel.is_set():
+                raise JobCancelled("Segmentation cancelled")
+            lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+            console.set_progress(p, detail=msg, step="segmentation", level=lvl)  # type: ignore[arg-type]
+
+        def log_cb(level: str, msg: str) -> None:
+            if _cancel.is_set():
+                raise JobCancelled("Segmentation cancelled")
+            lvl = level if level in ("info", "verbose", "warn", "error", "success") else "verbose"
+            console.log(msg, level=lvl, step="segmentation")  # type: ignore[arg-type]
 
         try:
             result = run_segmentation(
@@ -63,6 +100,7 @@ def start_segmentation_job(
                 search_radius_m=search_radius_m,
                 min_iou=min_iou,
                 progress=progress,
+                log=log_cb,
             )
             n = result["count"]
             mode = result.get("mode") or "pair"
@@ -78,11 +116,39 @@ def start_segmentation_job(
                 message=done_msg,
             )
             with _lock:
-                _state.update({"running": False, "result": result, "error": None})
+                _state.update(
+                    {
+                        "running": False,
+                        "cancelable": False,
+                        "cancelled": False,
+                        "result": result,
+                        "error": None,
+                    }
+                )
             console.end_job(ok=True, message=f"Segmented {done_msg}")
+        except JobCancelled:
+            with _lock:
+                _state.update(
+                    {
+                        "running": False,
+                        "cancelable": False,
+                        "cancelled": True,
+                        "error": None,
+                        "result": None,
+                    }
+                )
+            console.end_job(ok=False, message="Cancelled")
         except Exception as e:
             with _lock:
-                _state.update({"running": False, "error": str(e), "result": None})
+                _state.update(
+                    {
+                        "running": False,
+                        "cancelable": False,
+                        "cancelled": False,
+                        "error": str(e),
+                        "result": None,
+                    }
+                )
             console.end_job(ok=False, message=str(e))
 
     _thread = threading.Thread(target=work, daemon=True)

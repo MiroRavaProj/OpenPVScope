@@ -238,19 +238,19 @@ export const it: Dict = {
       "Copia l'AOI + griglia RGB nella modalità termica (stessi angoli/celle in WGS84). Poi regola gli angoli termici se necessario.",
     confRgb: "Confidenza match RGB",
     confRgbTitle:
-      "Soglia di match RGB (0–1). Più alta = box RGB meno numerosi e più rigorosi; più bassa = più rilevamenti, incluse corrispondenze deboli. Predefinito 0.5.",
+      "Soglia di match RGB (0–1). Più alta = box RGB meno numerosi e più rigorosi; più bassa = più rilevamenti, incluse corrispondenze deboli. Predefinito 0.65.",
     confThermal: "Confidenza match termico",
     confThermalTitle:
-      "Soglia di match termico (0–1). Più alta = meno box termici; più bassa = più rilevamenti (i punteggi termici sono spesso più bassi di quelli RGB). Predefinito 0.5.",
+      "Soglia di match termico (0–1). Più alta = meno box termici; più bassa = più rilevamenti (i punteggi termici sono spesso più bassi di quelli RGB). Predefinito 0.65.",
     thermalMatchModeAria: "Modalità matching termico",
     thermalMatchModeTitle:
-      "Come vengono abbinati i template termici. Confronta le modalità sulla stessa griglia; l'RGB non cambia.",
+      "Come vengono abbinati i template termici. Confronta le modalità sulla stessa griglia; l'RGB non cambia. Predefinito: +15% contesto.",
     thermalMatchModeHint: "Matcher termico (confronta le modalità, poi rilancia il rilevamento)",
     thermalMatchDefault: "Default",
-    thermalMatchDefaultTitle: "Match template in scala di grigi sulla temperatura (comportamento attuale).",
+    thermalMatchDefaultTitle: "Match template in scala di grigi sulla temperatura.",
     thermalMatchContext: "+15% contesto",
     thermalMatchContextTitle:
-      "Match con template allargati del 15% per lato (include bordi/interspazi), poi box alla dimensione esatta del pannello.",
+      "Match con template allargati del 15% per lato (include bordi/interspazi), poi box alla dimensione esatta del pannello. Modalità predefinita.",
     thermalMatchGradient: "Gradiente",
     thermalMatchGradientTitle:
       "Match sulla magnitudine degli edge Sobel invece dei °C grezzi — privilegia i bordi rispetto all'erba piatta.",
@@ -262,12 +262,14 @@ export const it: Dict = {
     templatesSome: "{{n}} di {{total}}",
     templatesTitle:
       "Quante celle della griglia usare come template. 0 = tutte le celle (più lento, copertura migliore). Più alto = maggiore varietà di template quando i pannelli differiscono; più basso = più veloce, meno copertura.",
-    tempCap: "Limite temperatura termica °C (predefinito 45)",
+    tempCap: "Limite temperatura termica °C",
     tempCapTitle:
-      "Solo termico: limita le temperature dell'immagine di ricerca sopra questa soglia in °C. Più alto = mantiene i pixel più caldi; più basso = sopprime maggiormente gli outlier caldi. Predefinito 45°C.",
+      "Solo termico: limita le temperature dell'immagine di ricerca sopra questa soglia in °C. Predefinito = mediana delle temperature dei pixel nella griglia termica + 10°C (ricalcolato quando generi o copi la griglia termica).",
     advancedValidation: "Validazione avanzata (raffinamento)",
     advancedValidationTitle:
-      "Rifinitura post-NMS: adattamento griglia DBSCAN → potatura bordi → riempimento Conway. Attivo = array regolari più puliti; disattivo = solo output grezzo del matcher.",
+      "Rifinitura post-NMS: adattamento griglia DBSCAN → potatura bordi → riempimento Conway. Attivo = array regolari più puliti; disattivo (predefinito) = solo output grezzo del matcher.",
+    cancel: "Annulla",
+    cancelTitle: "Interrompi il rilevamento in corso",
     fineTune: "Raffina confidenza",
     fineTuneTitle:
       "Raffina la soglia di confidenza. Più alta = mantiene solo i picchi forti (potatura più rigorosa); più bassa = mantiene più rilevamenti deboli / fuori griglia. Predefinito 0.65.",
@@ -303,11 +305,19 @@ export const it: Dict = {
     margin: "Margine",
     marginTitle:
       "Bordo extra intorno ai ritagli di anteprima raddrizzati. Più alto = più contesto intorno al pannello; più basso = ritaglio più stretto sul solo pannello.",
-    minIou: "IoU minima",
+    minIou: "IoU minima {{value}}",
     minIouTitle:
-      "IoU minima del centro per accettare una coppia RGB↔termico. Più alta = solo corrispondenze rigorose; più bassa = mantiene coppie più deboli / distanti.",
+      "Sovrapposizione (0–1) richiesta tra un rilevamento RGB e uno termico per considerarli lo stesso pannello. Trascina per vedere in anteprima quali box si accoppiano sulla mappa; poi avvia l'estrazione. Predefinito 0.75 = solo sovrapposizioni forti.",
+    previewHint: "Anteprima coppie: {{count}}. Regola l'IoU minima, poi estrai quando i box sono corretti.",
+    removeIsolated: "Rimuovi isolati",
+    removeIsolatedTitle:
+      "Esclude i pannelli senza vicino a un passo (pitch) sinistra/destra/su/giù. Li toglie dall'inclusione detection e dai risultati di segmentazione.",
+    isolatedRemoved:
+      "Rimossi isolati: RGB {{rgb}}, termici {{thermal}}, coppie estratte {{pairs}}.",
     run: "Esegui accoppiamento ed estrazione",
     extracting: "Estrazione…",
+    cancel: "Annulla",
+    cancelTitle: "Interrompi la segmentazione in corso",
     runTitle: "Accoppia i rilevamenti RGB e termici, poi estrai i ritagli raddrizzati e le statistiche termiche.",
     saveLabels: "Salva etichette",
     saveLabelsTitle:
@@ -430,6 +440,8 @@ export const it: Dict = {
     preview: "Anteprima allineamento",
     rePreview: "Rigenera anteprima allineamento",
     previewRunning: "In corso…",
+    cancel: "Annulla",
+    cancelTitle: "Interrompi l'allineamento in corso",
     fit: "Adatta",
     waitingOrtho: "In attesa dell'ortofoto…",
     paramMaxRegGsd: "Max GSD registrazione (m)",
@@ -440,6 +452,10 @@ export const it: Dict = {
     errorBadParams: "Tutti i parametri di allineamento devono essere numeri positivi.",
     consolePreviewTitle: "Anteprima allineamento ortofoto",
     consolePreviewDetail: "Correlazione di fase + TPS a tile metriche — scrittura del GeoTIFF allineato…",
+    consoleCancelTitle: "Annullamento allineamento",
+    consoleCancelDetail: "Arresto del processo di allineamento…",
+    consoleCancelledTitle: "Allineamento annullato",
+    consoleCancelledDetail: "Anteprima interrotta. Modifica i parametri e riprova quando sei pronto.",
     consoleSaveTitle: "Salvataggio allineamento",
     consoleSaveDetail: "Segnatura del completamento dell'allineamento ortofoto…",
     statusAligned: "Termico allineato a RGB (phase + TPS)",

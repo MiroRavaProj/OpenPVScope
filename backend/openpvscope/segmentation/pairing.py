@@ -5,20 +5,26 @@ Port of utils/segmentation/panel_pairing.py:
   - search by center distance (meters)
   - score by approximate IoU of equal-size boxes around centers
   - greedy 1:1 assignment (each thermal panel used at most once)
+
+Uses a KD-tree so pairing is O(N log N) instead of O(N²).
 """
 
 from __future__ import annotations
 
 import math
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 DEFAULT_SEARCH_RADIUS_M = 4.0
-DEFAULT_MIN_IOU = 0.1
+DEFAULT_MIN_IOU = 0.75
 # ~2 m at equator — same default as legacy calculate_iou_from_centers
 DEFAULT_PANEL_SIZE_DEG = 0.000018
+
+ProgressCb = Callable[..., None]  # (progress, message, *, level=...)
+LogCb = Callable[[str, str], None]  # (level, message)
 
 
 def _ring_centroid(ring: list[list[float]]) -> tuple[float, float]:
@@ -129,11 +135,43 @@ def estimate_search_radius_m(panels: list[dict[str, Any]]) -> float:
     p0 = panels[0]
     lon, lat = p0["center_lon"], p0["center_lat"]
     size_deg = estimate_panel_size_deg(panels)
-    # convert size_deg at this latitude to meters (approx)
     m_per_deg_lat = 111_320.0
     m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat))
     side_m = size_deg * max(m_per_deg_lat, abs(m_per_deg_lon))
     return float(max(DEFAULT_SEARCH_RADIUS_M, 2.0 * side_m))
+
+
+def _lonlat_to_xy_m(
+    lons: np.ndarray,
+    lats: np.ndarray,
+    *,
+    lon0: float | None = None,
+    lat0: float | None = None,
+) -> tuple[np.ndarray, float, float]:
+    lat0 = float(np.mean(lats)) if lat0 is None else float(lat0)
+    lon0 = float(np.mean(lons)) if lon0 is None else float(lon0)
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * max(0.2, math.cos(math.radians(lat0)))
+    x = (lons - lon0) * m_per_deg_lon
+    y = (lats - lat0) * m_per_deg_lat
+    return np.column_stack([x, y]).astype(np.float64), lon0, lat0
+
+
+def _emit(
+    progress: ProgressCb | None,
+    log: LogCb | None,
+    p: float | None,
+    msg: str,
+    *,
+    level: str = "info",
+) -> None:
+    if progress is not None:
+        try:
+            progress(p, msg, level=level)
+        except TypeError:
+            progress(p, msg)
+    elif log is not None:
+        log(level, msg)
 
 
 def pair_rgb_thermal_panels(
@@ -143,12 +181,15 @@ def pair_rgb_thermal_panels(
     search_radius_m: float | None = None,
     min_iou: float = DEFAULT_MIN_IOU,
     panel_size_deg: float | None = None,
+    progress: ProgressCb | None = None,
+    log: LogCb | None = None,
 ) -> list[dict[str, Any]]:
     """
     Pair RGB panels to thermal panels (legacy greedy match).
 
     Returns pairs with rgb_ring + thermal_ring for modality-specific crops.
     """
+    _emit(progress, log, 0, "Parsing RGB / thermal panel features…", level="info")
     rgb_panels = _features_as_panels(rgb_fc)
     th_panels = _features_as_panels(thermal_fc)
     if not rgb_panels:
@@ -159,16 +200,45 @@ def pair_rgb_thermal_panels(
     size_deg = panel_size_deg if panel_size_deg is not None else estimate_panel_size_deg(rgb_panels)
     radius = search_radius_m if search_radius_m is not None else estimate_search_radius_m(rgb_panels)
 
-    used_thermal: set[str] = set()
-    pairs: list[dict[str, Any]] = []
+    _emit(
+        progress,
+        log,
+        2,
+        f"Pairing setup: {len(rgb_panels)} RGB × {len(th_panels)} thermal | "
+        f"search_radius={radius:.2f} m | panel_size={size_deg:.8f}° | min_iou={min_iou}",
+        level="info",
+    )
+    _emit(
+        progress,
+        log,
+        3,
+        "Building thermal KD-tree (meter space)…",
+        level="verbose",
+    )
 
-    for rgb in rgb_panels:
-        best = None
+    th_lons = np.array([p["center_lon"] for p in th_panels], dtype=np.float64)
+    th_lats = np.array([p["center_lat"] for p in th_panels], dtype=np.float64)
+    th_xy, lon0, lat0 = _lonlat_to_xy_m(th_lons, th_lats)
+    tree = cKDTree(th_xy)
+
+    rgb_lons = np.array([p["center_lon"] for p in rgb_panels], dtype=np.float64)
+    rgb_lats = np.array([p["center_lat"] for p in rgb_panels], dtype=np.float64)
+    rgb_xy, _, _ = _lonlat_to_xy_m(rgb_lons, rgb_lats, lon0=lon0, lat0=lat0)
+
+    used_thermal: set[int] = set()
+    pairs: list[dict[str, Any]] = []
+    n_rgb = len(rgb_panels)
+    report_every = max(1, n_rgb // 40)
+
+    for i, rgb in enumerate(rgb_panels):
+        idxs = tree.query_ball_point(rgb_xy[i], r=radius)
+        best_j: int | None = None
         best_iou = 0.0
         best_dist = float("inf")
-        for th in th_panels:
-            if th["id"] in used_thermal:
+        for j in idxs:
+            if j in used_thermal:
                 continue
+            th = th_panels[j]
             dist = distance_meters(
                 rgb["center_lon"], rgb["center_lat"], th["center_lon"], th["center_lat"]
             )
@@ -183,33 +253,70 @@ def pair_rgb_thermal_panels(
             )
             if iou > best_iou:
                 best_iou = iou
-                best = th
+                best_j = j
                 best_dist = dist
-        if best is None or best_iou < min_iou:
-            continue
-        used_thermal.add(best["id"])
-        pair_id = uuid.uuid4().hex[:12]
-        pairs.append(
-            {
-                "id": pair_id,
-                "rgb_id": rgb["id"],
-                "thermal_id": best["id"],
-                "center": [rgb["center_lon"], rgb["center_lat"]],
-                "rgb_ring": rgb["ring"],
-                "thermal_ring": best["ring"],
-                "ring": rgb["ring"],  # map display uses RGB ring
-                "iou": float(best_iou),
-                "distance_m": float(best_dist),
-                "confidence": float(rgb["confidence"]),
-                "thermal_confidence": float(best["confidence"]),
-            }
-        )
+        if best_j is None:
+            if log and (i % report_every == 0 or i + 1 == n_rgb):
+                log(
+                    "verbose",
+                    f"RGB {i + 1}/{n_rgb} id={rgb['id']}: no thermal within {radius:.2f} m",
+                )
+        else:
+            used_thermal.add(best_j)
+            th = th_panels[best_j]
+            if best_iou < min_iou:
+                if log and (i % report_every == 0 or i + 1 == n_rgb):
+                    log(
+                        "verbose",
+                        f"RGB {i + 1}/{n_rgb} id={rgb['id']}: best IoU={best_iou:.3f} "
+                        f"< min_iou={min_iou} (thermal {th['id']} reserved)",
+                    )
+            else:
+                pair_id = uuid.uuid4().hex[:12]
+                pairs.append(
+                    {
+                        "id": pair_id,
+                        "rgb_id": rgb["id"],
+                        "thermal_id": th["id"],
+                        "center": [rgb["center_lon"], rgb["center_lat"]],
+                        "rgb_ring": rgb["ring"],
+                        "thermal_ring": th["ring"],
+                        "ring": rgb["ring"],
+                        "iou": float(best_iou),
+                        "distance_m": float(best_dist),
+                        "confidence": float(rgb["confidence"]),
+                        "thermal_confidence": float(th["confidence"]),
+                    }
+                )
+                if log and (i % report_every == 0 or i + 1 == n_rgb):
+                    log(
+                        "verbose",
+                        f"RGB {i + 1}/{n_rgb} id={rgb['id']} ↔ thermal {th['id']} "
+                        f"IoU={best_iou:.3f} dist={best_dist:.2f} m",
+                    )
+
+        if i % report_every == 0 or i + 1 == n_rgb:
+            _emit(
+                progress,
+                None,
+                5 + 90 * (i + 1) / n_rgb,
+                f"Pairing {i + 1}/{n_rgb} RGB panels… ({len(pairs)} kept so far)",
+                level="verbose",
+            )
 
     pairs.sort(key=lambda p: p["id"])
+    _emit(
+        progress,
+        log,
+        98,
+        f"Pairing done: {len(pairs)} pairs "
+        f"(RGB unmatched/below IoU: {n_rgb - len(pairs)}, "
+        f"thermal used: {len(used_thermal)}/{len(th_panels)})",
+        level="info",
+    )
     return pairs
 
 
-# Back-compat alias used by older callers
 def pair_panels_self(panels_fc: dict[str, Any], *, max_center_dist_m: float = 8.0) -> list[dict[str, Any]]:
     """Deprecated self-pair — keep for imports; prefer pair_rgb_thermal_panels."""
     _ = max_center_dist_m

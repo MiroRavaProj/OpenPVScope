@@ -26,12 +26,21 @@ DEFAULT_PRODUCTS: dict[str, bool] = {
     "dtm": False,
 }
 
+DEFAULT_THERMAL: dict[str, Any] = {
+    "emissivity": 0.95,
+    "distance": 5.0,
+    "humidity": 50.0,
+    "reflection": 25.0,
+    "parametric_fallback": False,
+}
+
 DEFAULT_SETUP: dict[str, Any] = {
     "wizard_complete": False,
     "modalities": "rgb_and_thermal",
     "mode": "process",
     "odx": dict(DEFAULT_ODX_OPTIONS),
     "products": dict(DEFAULT_PRODUCTS),
+    "thermal": dict(DEFAULT_THERMAL),
 }
 
 
@@ -77,6 +86,21 @@ def _merge_products(raw: Any) -> dict[str, bool]:
     return out
 
 
+def _merge_thermal(raw: Any) -> dict[str, Any]:
+    out = dict(DEFAULT_THERMAL)
+    if not isinstance(raw, dict):
+        return out
+    for key in ("emissivity", "distance", "humidity", "reflection"):
+        if key in raw:
+            try:
+                out[key] = float(raw[key])
+            except (TypeError, ValueError):
+                pass
+    if "parametric_fallback" in raw:
+        out["parametric_fallback"] = bool(raw["parametric_fallback"])
+    return out
+
+
 def normalize_setup(data: Any) -> dict[str, Any]:
     base = default_setup()
     if not isinstance(data, dict):
@@ -91,6 +115,7 @@ def normalize_setup(data: Any) -> dict[str, Any]:
         base["mode"] = mode
     base["odx"] = _merge_odx(data.get("odx"))
     base["products"] = _merge_products(data.get("products"))
+    base["thermal"] = _merge_thermal(data.get("thermal"))
     return base
 
 

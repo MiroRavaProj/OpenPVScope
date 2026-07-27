@@ -282,13 +282,32 @@ export function PlantMap(props: PlantMapProps) {
     editRingRef.current = [];
   }, []);
 
-  const loadVectors = useCallback(async (map: Map) => {
-    const modality = propsRef.current.modality;
+  const panelsCacheRef = useRef<{ rgb: GeoJsonFc; thermal: GeoJsonFc } | null>(null);
+
+  const applyPanelFilter = useCallback((map: Map) => {
+    const cache = panelsCacheRef.current;
+    if (!cache) return;
     const showPanels = propsRef.current.showPanels;
     const minConfRgb = propsRef.current.displayConfidenceRgb ?? 0;
     const minConfThermal = propsRef.current.displayConfidenceThermal ?? 0;
-    const mode = propsRef.current.mode;
     const visibleFates = propsRef.current.visibleFates;
+    setGeoJson(
+      map,
+      "panels",
+      mergePanels(
+        cache.rgb,
+        cache.thermal,
+        showPanels,
+        minConfRgb,
+        minConfThermal,
+        visibleFates ?? null,
+      ),
+    );
+  }, []);
+
+  const loadVectors = useCallback(async (map: Map) => {
+    const modality = propsRef.current.modality;
+    const mode = propsRef.current.mode;
     try {
       const layerName = mode === "detection" ? "panels_all" : "panels";
       const [aoi, grid, panelsRgb, panelsTh, pairs] = await Promise.all([
@@ -300,23 +319,13 @@ export function PlantMap(props: PlantMapProps) {
       ]);
       setGeoJson(map, "aoi", aoi);
       setGeoJson(map, "grid", grid);
+      panelsCacheRef.current = { rgb: panelsRgb, thermal: panelsTh };
       if (mode === "segmentation") {
         setGeoJson(map, "panels", EMPTY_FC);
         const override = propsRef.current.pairsGeojson;
         setGeoJson(map, "pairs", override ?? pairs);
       } else {
-        setGeoJson(
-          map,
-          "panels",
-          mergePanels(
-            panelsRgb,
-            panelsTh,
-            showPanels,
-            minConfRgb,
-            minConfThermal,
-            visibleFates ?? null,
-          ),
-        );
+        applyPanelFilter(map);
         setGeoJson(map, "pairs", EMPTY_FC);
       }
       applyModeVisibility(map, mode);
@@ -325,7 +334,7 @@ export function PlantMap(props: PlantMapProps) {
       console.error(e);
       return null;
     }
-  }, []);
+  }, [applyPanelFilter]);
 
   const finishAoi = useCallback(
     async (map: Map, ring: number[][]) => {
@@ -775,13 +784,25 @@ export function PlantMap(props: PlantMapProps) {
     props.refreshKey,
     props.modality,
     props.showPanels,
-    props.displayConfidenceRgb,
-    props.displayConfidenceThermal,
     props.mode,
-    props.visibleFates,
     loadVectors,
     mapReady,
     syncEditMarkers,
+  ]);
+
+  // Re-filter cached panels only — no network — when confidence / fate filters change.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    if (props.mode !== "detection") return;
+    applyPanelFilter(map);
+  }, [
+    props.displayConfidenceRgb,
+    props.displayConfidenceThermal,
+    props.visibleFates,
+    props.mode,
+    mapReady,
+    applyPanelFilter,
   ]);
 
   useEffect(() => {

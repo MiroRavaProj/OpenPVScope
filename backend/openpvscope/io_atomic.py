@@ -33,7 +33,12 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
     atomic_write_bytes(path, text.encode(encoding))
 
 
-def atomic_write_json(path: Path, data: dict[str, Any] | list[Any], *, indent: int = 2) -> None:
+def atomic_write_json(
+    path: Path,
+    data: dict[str, Any] | list[Any],
+    *,
+    indent: int | None = 2,
+) -> None:
     text = json.dumps(data, indent=indent) + "\n"
     atomic_write_text(path, text)
 

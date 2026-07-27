@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useT } from "../i18n";
+import { NumberField } from "../ui/NumberField";
 
 const PALETTES: Record<string, number[][]> = {
   hot: [
@@ -185,13 +186,12 @@ export function ThermalImageViewer(props: { panelId: string }) {
           title={t("thermalViewer.displayMinTitle")}
         >
           {t("thermalViewer.displayMin")}
-          <input
-            type="number"
+          <NumberField
             step={0.1}
             value={Number(tMin.toFixed(2))}
             min={dataMin - 5}
             max={dataMax + 5}
-            onChange={(e) => setTMin(Number(Number(e.target.value).toFixed(2)))}
+            onChange={(v) => setTMin(Number(v.toFixed(2)))}
           />
         </label>
         <label
@@ -199,13 +199,12 @@ export function ThermalImageViewer(props: { panelId: string }) {
           title={t("thermalViewer.displayMaxTitle")}
         >
           {t("thermalViewer.displayMax")}
-          <input
-            type="number"
+          <NumberField
             step={0.1}
             value={Number(tMax.toFixed(2))}
             min={dataMin - 5}
             max={dataMax + 5}
-            onChange={(e) => setTMax(Number(Number(e.target.value).toFixed(2)))}
+            onChange={(v) => setTMax(Number(v.toFixed(2)))}
           />
         </label>
       </div>
